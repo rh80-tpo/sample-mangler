@@ -1,10 +1,17 @@
 /* ---------------------------------------------------------------- shell */
 
+/*
+ * Fills the viewport, and grows past it when it has to.
+ *
+ * The height lives here, on a grid whose single child stretches, rather than
+ * on a chain of percentage heights. Percentages need a definite parent height
+ * to resolve against, and the moment one link in that chain becomes
+ * min-height the whole thing silently falls back to content sizing, which
+ * lets the waveform rows balloon and push the rack off screen.
+ */
 .app {
-  /* min-height rather than height: with the rack open on a short viewport the
-     page has to be allowed to grow and scroll instead of clipping the
-     controls. */
-  min-height: 100%;
+  min-height: 100dvh;
+  display: grid;
   padding: clamp(var(--sp-4), 2.4vw, var(--sp-6));
   position: relative;
   isolation: isolate;
@@ -27,13 +34,22 @@
 }
 
 .app__shake {
-  min-height: 100%;
+  /* Stretches to the app's grid area, so the 1fr stage row has a bound to
+     distribute against. */
+  min-height: 0;
+  width: 100%;
   max-width: 1500px;
   margin: 0 auto;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: clamp(var(--sp-3), 1.8vh, var(--sp-5));
   will-change: transform;
+}
+
+/* The waveforms must stay legible even when the rack is eating vertical
+   space, so give each panel a floor and let the page scroll past it. */
+.wave__canvas {
+  min-height: 84px;
 }
 
 /* ---------------------------------------------------------------- header */
@@ -142,8 +158,19 @@
   background: color-mix(in srgb, var(--signal) 5%, var(--ground-sunken));
 }
 
+/*
+ * Absolutely positioned so it contributes nothing to layout.
+ *
+ * A canvas has an intrinsic size from its width/height attributes. In flow,
+ * that size feeds the container, the ResizeObserver sees the bigger box, sets
+ * a bigger backing store, and the panel grows without bound. Taking it out of
+ * flow means the panel is sized purely by the grid and the canvas just fills
+ * whatever it is given.
+ */
 .wave__canvas canvas {
   display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
