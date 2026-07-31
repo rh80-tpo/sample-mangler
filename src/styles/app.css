@@ -1197,6 +1197,39 @@
   box-shadow: none;
 }
 
+/* --------------------------------------------------------------- flash */
+
+/*
+ * Visible confirmation that something landed. Sits in the control row's own
+ * space, because the folders drawer it refers to is often below the fold and
+ * expanding it was not proof of anything you could see.
+ */
+.flash {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--signal);
+  color: var(--ground);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  animation: flash-in var(--dur-mid) var(--ease-snap);
+}
+
+.flash__tick {
+  font-size: var(--step--1);
+  line-height: 1;
+}
+
+@keyframes flash-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
 /* ---------------------------------------------------------------- notice */
 
 .notice {

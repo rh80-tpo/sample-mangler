@@ -36,7 +36,7 @@ import {
 import { describeKey, detectKey } from './audio/key'
 import { Library } from './components/Library'
 import { Wordmark } from './components/Wordmark'
-import { addItem, createFolder, listFolders } from './lib/library'
+import { addItem, countItems, createFolder, listFolders } from './lib/library'
 import { encodeWav } from './audio/wav'
 import './styles/app.css'
 
@@ -155,10 +155,14 @@ export function App() {
   const fitRef = useRef(fit)
   fitRef.current = fit
   const [libOpen, setLibOpen] = useState(false)
+  /** Opened on load when the library already has something in it. */
+  const openedOnce = useRef(false)
   const [libRev, setLibRev] = useState(0)
   /** Which folder SAVE drops into. */
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
   const [activeFolderName, setActiveFolderName] = useState('')
+  /** Short-lived visible confirmation, so an action never looks like nothing. */
+  const [flash, setFlash] = useState('')
   const [jolt, setJolt] = useState(0)
   const [announce, setAnnounce] = useState('')
 
@@ -632,19 +636,37 @@ export function App() {
    * the selection when there is one. Still the same buffer that plays, so the
    * file keeps matching what was heard.
    */
+  /**
+   * Save and export both work on whichever panel the transport is pointed at,
+   * cut down to that panel's selection.
+   *
+   * Previously this was the mangled result only, so with a sample loaded but
+   * not yet rolled the buttons sat disabled and silent. Pressing a dead button
+   * with no explanation is indistinguishable from a broken one, and a trimmed
+   * source is worth keeping in its own right.
+   */
+  const savingSource = target === 'source' || !result
   const outputPcm = useCallback((): Pcm | null => {
+    if (savingSource) {
+      if (!source) return null
+      return sourceRegion ? slicePcm(source, sourceRegion) : source
+    }
     if (!result) return null
     return mangledRegion ? slicePcm(result.pcm, mangledRegion) : result.pcm
-  }, [result, mangledRegion])
+  }, [savingSource, source, sourceRegion, result, mangledRegion])
 
   const outputName = useCallback((): string => {
+    if (savingSource) {
+      const cut = sourceRegion || trimmed ? '-cut' : ''
+      return `${baseName(fileName)}${cut}`
+    }
     if (!result) return 'mangled'
     // The seed alone reproduces a rolled chain but not a hand-edited one, so
     // the name says which it is rather than implying it can be recreated.
     const stamp = edited ? `${result.seed.toString(36)}-edit` : result.seed.toString(36)
     const cut = mangledRegion ? '-cut' : ''
     return `${baseName(fileName)}-mangled-${stamp}${cut}`
-  }, [result, fileName, edited, mangledRegion])
+  }, [savingSource, sourceRegion, trimmed, result, fileName, edited, mangledRegion])
 
   const exportWav = useCallback(() => {
     const pcm = outputPcm()
@@ -659,6 +681,7 @@ export function App() {
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 4000)
     setAnnounce(`Exported ${a.download}.`)
+    setFlash(`exported ${a.download}`)
   }, [outputPcm, outputName])
 
   /** Drop the current output into a folder, making one if none exists yet. */
@@ -691,9 +714,35 @@ export function App() {
       setLibRev((n) => n + 1)
       setLibOpen(true)
       setAnnounce(`Saved to ${folder.name}.`)
+      // Something has to visibly happen. The drawer sits at the bottom of a
+      // tall page, so opening it was usually off screen and a save looked
+      // exactly like a button that did nothing.
+      setFlash(`saved ${outputName()} → ${folder.name}`)
+      window.setTimeout(() => {
+        document
+          .querySelector('.lib')
+          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      }, 60)
     },
     [outputPcm, outputName, activeFolderId],
   )
+
+  // Clear the confirmation after a beat.
+  useEffect(() => {
+    if (!flash) return
+    const id = setTimeout(() => setFlash(''), 2600)
+    return () => clearTimeout(id)
+  }, [flash])
+
+  // Anything already saved gets shown on arrival. A collapsed drawer meant
+  // work from a previous session was invisible until you went looking.
+  useEffect(() => {
+    void (async () => {
+      if (openedOnce.current) return
+      openedOnce.current = true
+      if ((await countItems()) > 0) setLibOpen(true)
+    })()
+  }, [])
 
   // --- drag and drop -------------------------------------------------
   const onDrop = useCallback(
@@ -1088,13 +1137,20 @@ export function App() {
             type="button"
             className="btn btn--ghost"
             onClick={() => void saveToLibrary()}
-            disabled={!hasResult}
+            disabled={!current}
+            title={
+              current
+                ? `Save the ${savingSource ? 'source' : 'mangled result'} to ${activeFolderName || 'a new folder'}`
+                : 'Load or build a sample first'
+            }
           >
             {/* Naming the destination means you never have to guess where a
                 save landed, or open the drawer to find out. */}
             save{activeFolderName ? ` → ${activeFolderName}` : ''}
             <span className="sr-only">
-              {mangledRegion ? ' the selection' : ' the result'}
+              {' the '}
+              {savingSource ? 'source' : 'mangled result'}
+              {(savingSource ? sourceRegion : mangledRegion) ? ' selection' : ''}
               {activeFolderName ? '' : ' to a new folder'}
             </span>
           </button>
@@ -1103,11 +1159,18 @@ export function App() {
             type="button"
             className="btn btn--ghost"
             onClick={exportWav}
-            disabled={!hasResult}
+            disabled={!current}
+            title={
+              current
+                ? `Download the ${savingSource ? 'source' : 'mangled result'} as a wav`
+                : 'Load or build a sample first'
+            }
           >
             wav
             <span className="sr-only">
-              {activeRegion ? ' — download the selection' : ' — download the result'}
+              {' — download the '}
+              {savingSource ? 'source' : 'mangled result'}
+              {(savingSource ? sourceRegion : mangledRegion) ? ' selection' : ''}
             </span>
           </button>
         </footer>
@@ -1132,6 +1195,15 @@ export function App() {
             })()
           }}
         />
+
+        {flash ? (
+          <p className="flash" role="status">
+            <span className="flash__tick" aria-hidden="true">
+              ✓
+            </span>
+            {flash}
+          </p>
+        ) : null}
 
         {error ? (
           <div className="notice" role="alert">
