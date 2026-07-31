@@ -16,6 +16,7 @@ import { encodeWav, QUANTISATION_STEP } from './audio/wav'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
 import { DecodeError, decodeAudio } from './audio/decode'
+import { detectKey } from './audio/key'
 
 const out = document.getElementById('out') as HTMLPreElement
 const lines: string[] = []
@@ -163,6 +164,87 @@ async function run() {
       'rerolls all differ',
       identical === 0,
       `${identical} identical pairs of 15, worst-case corr ${maxPairCorr.toFixed(4)}`,
+    )
+    log()
+  }
+
+  // --- key detection ----------------------------------------------------
+  // Chords built at a known tonic must come back as that key, and material
+  // with no key must come back as nothing rather than a confident guess.
+  {
+    log('=== key detection ===')
+    log()
+    const sr = ctx.sampleRate
+    const midiHz = (n: number) => 440 * Math.pow(2, (n - 69) / 12)
+    const chords = (root: number, mode: 'major' | 'minor'): Pcm => {
+      const n = sr * 8
+      const l = new Float32Array(n)
+      const r = new Float32Array(n)
+      const prog =
+        mode === 'major'
+          ? [[0, 4, 7], [5, 9, 12], [7, 11, 14], [0, 4, 7]]
+          : [[0, 3, 7], [5, 8, 12], [7, 10, 14], [0, 3, 7]]
+      const per = Math.floor(n / prog.length)
+      prog.forEach((ch, idx) => {
+        for (const iv of ch) {
+          const f = midiHz(root + 60 + iv)
+          for (let i = 0; i < per; i++) {
+            const t = i / sr
+            const env = Math.min(1, t * 8) * Math.exp(-t * 0.6)
+            let v = 0
+            for (let h = 1; h <= 4; h++) v += Math.sin(2 * Math.PI * f * h * t) / (h * h)
+            const at = idx * per + i
+            if (at < n) {
+              l[at] += v * env * 0.12
+              r[at] += v * env * 0.12
+            }
+          }
+        }
+      })
+      return { channels: [l, r], sampleRate: sr }
+    }
+
+    const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    let right = 0
+    const cases: [number, 'major' | 'minor'][] = [
+      [0, 'major'], [7, 'major'], [9, 'minor'], [2, 'minor'],
+      [6, 'major'], [3, 'minor'], [10, 'major'], [4, 'minor'],
+    ]
+    for (const [root, mode] of cases) {
+      const want = `${NAMES[root]} ${mode === 'major' ? 'maj' : 'min'}`
+      const got = detectKey(chords(root, mode))
+      if (got?.label === want) right++
+      else log(`  <span class="bad">${want} read as ${got?.label ?? 'nothing'}</span>`)
+    }
+    check('known keys are identified', right === cases.length, `${right}/${cases.length}`)
+
+    const noise: Pcm = {
+      sampleRate: sr,
+      channels: [new Float32Array(sr * 4), new Float32Array(sr * 4)],
+    }
+    for (const ch of noise.channels) {
+      for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1
+    }
+    check('noise is not given a key', detectKey(noise) === null, 'returned null')
+
+    // The case that matters: a tonal part under a drum loop.
+    const tonal = chords(9, 'minor')
+    const drums = generateSample('drums', sr, freshSeed())
+    const n = Math.min(tonal.channels[0].length, drums.channels[0].length)
+    const mixed: Pcm = {
+      sampleRate: sr,
+      channels: [new Float32Array(n), new Float32Array(n)],
+    }
+    for (let c = 0; c < 2; c++) {
+      for (let i = 0; i < n; i++) {
+        mixed.channels[c][i] = tonal.channels[c][i] * 0.8 + drums.channels[c][i] * 0.9
+      }
+    }
+    const mixedKey = detectKey(mixed)
+    check(
+      'drums do not drown the key',
+      mixedKey?.label === 'A min',
+      `A min chords over drums read as ${mixedKey?.label ?? 'nothing'}`,
     )
     log()
   }

@@ -33,6 +33,7 @@ import {
   slicePcm,
   type Region,
 } from './audio/slice'
+import { describeKey, detectKey } from './audio/key'
 import { Library } from './components/Library'
 import { Wordmark } from './components/Wordmark'
 import { addItem, createFolder, listFolders } from './lib/library'
@@ -139,6 +140,10 @@ export function App() {
   }>({ source: null, mangled: null })
   /** What stage a file load is at, so a slow one does not look like nothing. */
   const [stage, setStage] = useState('')
+  /** Detected key of each panel. Null when the material has no key to name. */
+  const [keys, setKeys] = useState<{ source: string | null; mangled: string | null }>(
+    { source: null, mangled: null },
+  )
   const [fit, setFit] = useState<FitSpec>(NO_FIT)
   // Read through a ref so the render callbacks do not have to be rebuilt (and
   // the render queue reset) every time a length control moves.
@@ -652,6 +657,44 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [current, source, busy, togglePlay, mangle])
 
+  // --- key detection --------------------------------------------------
+  // Run off the back of a render rather than inside it: the answer is useful
+  // but never worth making a roll feel slower. Pitch shift is in the pool, so
+  // the mangled key genuinely differs from the source and both are worth
+  // knowing before dropping a chop into a track.
+  useEffect(() => {
+    let cancelled = false
+    const pcm = sourceRegion && source ? slicePcm(source, sourceRegion) : source
+    if (!pcm) {
+      setKeys((k) => ({ ...k, source: null }))
+      return
+    }
+    const id = setTimeout(() => {
+      const found = describeKey(detectKey(pcm))
+      if (!cancelled) setKeys((k) => ({ ...k, source: found }))
+    }, 0)
+    return () => {
+      cancelled = true
+      clearTimeout(id)
+    }
+  }, [source, sourceRegion])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!result) {
+      setKeys((k) => ({ ...k, mangled: null }))
+      return
+    }
+    const id = setTimeout(() => {
+      const found = describeKey(detectKey(result.pcm))
+      if (!cancelled) setKeys((k) => ({ ...k, mangled: found }))
+    }, 0)
+    return () => {
+      cancelled = true
+      clearTimeout(id)
+    }
+  }, [result])
+
   // --- the flinch ----------------------------------------------------
   // Driven through the Web Animations API rather than a remount or a toggled
   // class: re-keying the tree would tear down and reallocate both canvases on
@@ -739,7 +782,7 @@ export function App() {
                 pcm={source}
                 tone="source"
                 label="source"
-                summary={summarise(source)}
+                summary={`${summarise(source)}${keys.source ? ` · ${keys.source}` : ''}`}
                 seconds={durationOf(source)}
                 playhead={
                   target === 'source' ? (playing ? playhead : cursor) : null
@@ -765,7 +808,7 @@ export function App() {
                 label="mangled"
                 summary={
                   result
-                    ? `${summarise(result.pcm)} · roll ${rollCount.current}${edited ? ' · edited' : ''}`
+                    ? `${summarise(result.pcm)}${keys.mangled ? ` · ${keys.mangled}` : ''} · roll ${rollCount.current}${edited ? ' · edited' : ''}`
                     : 'not yet'
                 }
                 reveal={reveal}
@@ -859,6 +902,9 @@ export function App() {
               onChange={onChainChange}
               onCommit={resumeAfterEdit}
               busy={busy}
+              seconds={
+                inputRef.current ? durationOf(inputRef.current) : 2
+              }
             />
             <section className="len" aria-label="Output length">
               <div className="len__head">

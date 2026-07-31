@@ -302,6 +302,47 @@ export function planPasses(ops: Op[]): Pass[] {
   return passes
 }
 
+/**
+ * A sensible starting point for an effect added by hand.
+ *
+ * Deliberately not a random roll: reaching for an effect yourself means you
+ * want a known, usable setting to work from, not another surprise.
+ */
+export function defaultEffect(id: EffectId, duration: number): EffectSpec {
+  switch (id) {
+    case 'reverse':
+      return { id: 'reverse', enabled: true }
+    case 'chop':
+      return {
+        id: 'chop',
+        enabled: true,
+        // Eighth notes at 120, which is where a chop reads as rhythmic.
+        segments: Math.max(4, Math.min(32, Math.round(duration / 0.25))),
+        reorder: 0.3,
+        repeat: 0.25,
+        gate: 0.1,
+      }
+    case 'bitcrush':
+      return { id: 'bitcrush', enabled: true, bits: 8, divisor: 4 }
+    case 'pitch':
+      return { id: 'pitch', enabled: true, semitones: -12, windowSize: 0.05 }
+    case 'drive':
+      return { id: 'drive', enabled: true, amount: 0.35, oversample: '2x' }
+    case 'reverb':
+      return { id: 'reverb', enabled: true, size: 0.6, damp: 5000, mix: 0.35 }
+  }
+}
+
+/** Every effect, for the add menu. */
+export const ALL_EFFECTS: readonly EffectId[] = [
+  'reverse',
+  'chop',
+  'bitcrush',
+  'pitch',
+  'drive',
+  'reverb',
+]
+
 /** Debug/verification only. Never rendered in the UI: the chain stays hidden. */
 export function describeChain(chain: ChainSpec): string {
   return chain.effects

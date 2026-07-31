@@ -794,6 +794,83 @@
   text-underline-offset: 3px;
 }
 
+/* Remove from the chain. Sits quiet until the module is hovered. */
+.mod__drop {
+  margin-left: auto;
+  min-width: 22px;
+  min-height: 22px;
+  font-size: var(--step--1);
+  line-height: 1;
+  color: var(--ink-faint);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-snap),
+    color var(--dur-fast) var(--ease-snap);
+}
+
+.mod:hover .mod__drop,
+.mod__drop:focus-visible {
+  opacity: 1;
+}
+
+.mod__drop:hover {
+  color: var(--signal);
+}
+
+.mod--add {
+  flex: 0 1 auto;
+}
+
+.mod__name--add {
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.mod__body--add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  align-content: flex-start;
+  max-width: 20rem;
+}
+
+.addfx {
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  font-size: var(--step--2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border: var(--edge) solid var(--hairline);
+  border-radius: var(--radius);
+  transition: color var(--dur-fast) var(--ease-snap),
+    background-color var(--dur-fast) var(--ease-snap),
+    border-color var(--dur-fast) var(--ease-snap);
+}
+
+.addfx:hover:not(:disabled) {
+  color: var(--ground);
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+.addfx:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  .addfx {
+    min-height: 40px;
+  }
+  .mod__drop {
+    opacity: 1;
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
+
 .mod__body {
   display: flex;
   flex-wrap: wrap;

@@ -5,7 +5,8 @@ import {
   writeParam,
   type Choice,
 } from '../audio/params'
-import type { ChainSpec, EffectSpec } from '../audio/types'
+import { ALL_EFFECTS, defaultEffect } from '../audio/chain'
+import type { ChainSpec, EffectId, EffectSpec } from '../audio/types'
 import { Knob } from './Knob'
 
 type Props = {
@@ -14,6 +15,8 @@ type Props = {
   /** Fires when an interaction settles, so playback can resync once. */
   onCommit?: () => void
   busy?: boolean
+  /** Length of the material, used to size a hand-added chop sensibly. */
+  seconds: number
 }
 
 function Selector({
@@ -55,11 +58,27 @@ function Selector({
  * Order is fixed here on purpose: reordering the chain is a different
  * interaction and belongs to the reroll, not to a knob.
  */
-export function Rack({ chain, onChange, onCommit, busy }: Props) {
+export function Rack({ chain, onChange, onCommit, busy, seconds }: Props) {
   const update = (index: number, next: EffectSpec) => {
     const effects = chain.effects.slice()
     effects[index] = next
     onChange({ ...chain, effects })
+  }
+
+  const add = (id: EffectId) => {
+    onChange({
+      ...chain,
+      effects: [...chain.effects, defaultEffect(id, seconds)],
+    })
+    onCommit?.()
+  }
+
+  const remove = (index: number) => {
+    onChange({
+      ...chain,
+      effects: chain.effects.filter((_, i) => i !== index),
+    })
+    onCommit?.()
   }
 
   return (
@@ -89,6 +108,14 @@ export function Rack({ chain, onChange, onCommit, busy }: Props) {
                 <span className="sr-only">
                   {spec.enabled ? ' is on. Turn it off.' : ' is off. Turn it on.'}
                 </span>
+              </button>
+              <button
+                type="button"
+                className="mod__drop"
+                onClick={() => remove(i)}
+                aria-label={`Remove ${EFFECT_LABELS[spec.id]} from the chain`}
+              >
+                <span aria-hidden="true">×</span>
               </button>
             </div>
 
@@ -126,6 +153,31 @@ export function Rack({ chain, onChange, onCommit, busy }: Props) {
           </div>
         )
       })}
+
+      {/* Add anything, any number of times. A reroll replaces the whole chain,
+          so this is how you build one deliberately instead of waiting for the
+          dice to hand you the effect you wanted. */}
+      <div className="mod mod--add">
+        <div className="mod__head">
+          <span className="mod__index" aria-hidden="true">
+            +
+          </span>
+          <span className="mod__name mod__name--add">add</span>
+        </div>
+        <div className="mod__body mod__body--add" role="group" aria-label="Add an effect">
+          {ALL_EFFECTS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              className="addfx"
+              disabled={busy}
+              onClick={() => add(id)}
+            >
+              {EFFECT_LABELS[id]}
+            </button>
+          ))}
+        </div>
+      </div>
     </section>
   )
 }
