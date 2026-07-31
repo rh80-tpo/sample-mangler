@@ -37,7 +37,7 @@ const SUBSET_WEIGHTS = [0.1, 0.31, 0.32, 0.21, 0.06]
 const MUSICAL_INTERVALS = [-12, -12, -7, -5, -5, -4, -3, 3, 4, 5, 7, 12]
 
 function rollReverse(): EffectSpec {
-  return { id: 'reverse' }
+  return { id: 'reverse', enabled: true }
 }
 
 /**
@@ -47,16 +47,17 @@ function rollReverse(): EffectSpec {
  * reading as an effect and just sounds like a bad edit, below ~45ms it stops
  * being a chop and becomes a buzz.
  */
-function rollChop(rng: Rng, duration: number): EffectSpec {
+function rollChop(rng: Rng, duration: number, solo: boolean): EffectSpec {
   const targetLen = Math.exp(
     randRange(rng, Math.log(0.045), Math.log(0.32)),
   )
   const segments = Math.max(3, Math.min(48, Math.round(duration / targetLen)))
   return {
     id: 'chop',
+    enabled: true,
     segments,
-    reorder: randRange(rng, 0.15, 0.65),
-    repeat: randRange(rng, 0.12, 0.45),
+    reorder: randRange(rng, solo ? 0.35 : 0.15, 0.65),
+    repeat: randRange(rng, solo ? 0.25 : 0.12, 0.45),
     gate: randRange(rng, 0.0, 0.3),
   }
 }
@@ -74,17 +75,23 @@ function rollChop(rng: Rng, duration: number): EffectSpec {
  * classic sampler sound. 16 lands near 3kHz and is very broken but still
  * readable as the original. Weighted toward the usable end.
  */
-function rollBitcrush(rng: Rng): EffectSpec {
-  const wrecked = chance(rng, 0.3)
-  const bits = wrecked ? randInt(rng, 4, 6) : randInt(rng, 7, 12)
-  const divisorRoll = weighted(rng, [0.28, 0.34, 0.24, 0.14])
+function rollBitcrush(rng: Rng, solo: boolean): EffectSpec {
+  const wrecked = chance(rng, solo ? 0.55 : 0.3)
+  const bits = wrecked ? randInt(rng, 4, 6) : randInt(rng, 7, solo ? 10 : 12)
+  // Divisor 1 means no rate reduction at all, which combined with a high bit
+  // depth is close to transparent. Fine when other effects carry the roll,
+  // not fine when this is the whole roll.
+  const divisorRoll = weighted(
+    rng,
+    solo ? [0, 0.3, 0.42, 0.28] : [0.28, 0.34, 0.24, 0.14],
+  )
   const divisor = [
     1,
     randInt(rng, 2, 4),
     randInt(rng, 5, 9),
     randInt(rng, 10, 16),
   ][divisorRoll]
-  return { id: 'bitcrush', bits, divisor }
+  return { id: 'bitcrush', enabled: true, bits, divisor }
 }
 
 /**
@@ -101,6 +108,7 @@ function rollPitch(rng: Rng): EffectSpec {
     : Math.round(randRange(rng, -24, 12) * 2) / 2
   return {
     id: 'pitch',
+    enabled: true,
     semitones,
     windowSize: randRange(rng, 0.03, 0.09),
   }
@@ -114,38 +122,54 @@ function rollPitch(rng: Rng): EffectSpec {
  * Oversampling is on most of the time because the aliasing without it reads as
  * a bug rather than a choice. It gets switched off occasionally on purpose.
  */
-function rollDrive(rng: Rng): EffectSpec {
-  const hard = chance(rng, 0.25)
+function rollDrive(rng: Rng, solo: boolean): EffectSpec {
+  const hard = chance(rng, solo ? 0.45 : 0.25)
   return {
     id: 'drive',
-    amount: hard ? randRange(rng, 0.62, 0.92) : randRange(rng, 0.18, 0.62),
+    enabled: true,
+    amount: hard
+      ? randRange(rng, 0.62, 0.92)
+      : randRange(rng, solo ? 0.35 : 0.18, 0.62),
     oversample: chance(rng, 0.8) ? pick(rng, ['2x', '4x'] as const) : 'none',
   }
 }
 
-function rollEffect(rng: Rng, id: EffectId, duration: number): EffectSpec {
+function rollEffect(
+  rng: Rng,
+  id: EffectId,
+  duration: number,
+  solo: boolean,
+): EffectSpec {
   switch (id) {
     case 'reverse':
       return rollReverse()
     case 'chop':
-      return rollChop(rng, duration)
+      return rollChop(rng, duration, solo)
     case 'bitcrush':
-      return rollBitcrush(rng)
+      return rollBitcrush(rng, solo)
     case 'pitch':
       return rollPitch(rng)
     case 'drive':
-      return rollDrive(rng)
+      return rollDrive(rng, solo)
   }
 }
 
-/** Roll a full chain: which effects, in what order, with what settings. */
+/**
+ * Roll a full chain: which effects, in what order, with what settings.
+ *
+ * When only one effect comes up it has to carry the whole roll, so its
+ * parameters are drawn from the more committed part of the range. Without
+ * that, a one-effect roll can land somewhere close to transparent and the
+ * reroll feels broken even though it worked.
+ */
 export function rollChain(seed: number, duration: number): ChainSpec {
   const rng = mulberry32(seed)
   const count = weighted(rng, SUBSET_WEIGHTS) + 1
   const chosen = shuffled(rng, POOL).slice(0, count)
+  const solo = count === 1
   return {
     seed,
-    effects: chosen.map((id) => rollEffect(rng, id, duration)),
+    effects: chosen.map((id) => rollEffect(rng, id, duration, solo)),
   }
 }
 
@@ -157,6 +181,9 @@ export function rollChain(seed: number, duration: number): ChainSpec {
 export function planOps(chain: ChainSpec): Op[] {
   const ops: Op[] = []
   for (const spec of chain.effects) {
+    // A bypassed effect keeps its settings but contributes nothing to the
+    // render, so switching it back on restores exactly what it was doing.
+    if (!spec.enabled) continue
     switch (spec.id) {
       case 'reverse':
       case 'chop':

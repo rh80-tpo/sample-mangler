@@ -1,7 +1,10 @@
 /* ---------------------------------------------------------------- shell */
 
 .app {
-  height: 100%;
+  /* min-height rather than height: with the rack open on a short viewport the
+     page has to be allowed to grow and scroll instead of clipping the
+     controls. */
+  min-height: 100%;
   padding: clamp(var(--sp-4), 2.4vw, var(--sp-6));
   position: relative;
   isolation: isolate;
@@ -24,12 +27,12 @@
 }
 
 .app__shake {
-  height: 100%;
+  min-height: 100%;
   max-width: 1500px;
   margin: 0 auto;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: clamp(var(--sp-4), 2.2vh, var(--sp-6));
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: clamp(var(--sp-3), 1.8vh, var(--sp-5));
   will-change: transform;
 }
 
@@ -161,6 +164,7 @@
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+  cursor: pointer;
 }
 
 /* Sits inside the scope, bottom left, over the dormant baseline. No dashed
@@ -200,6 +204,246 @@
   max-width: 46ch;
   font-size: var(--step--1);
   color: var(--ink-dim);
+}
+
+/* ---------------------------------------------------------------- rack */
+
+.rack {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--edge);
+  background: var(--hairline);
+  border: var(--edge) solid var(--hairline);
+  overflow-x: auto;
+}
+
+/* One module per effect. The hairline gaps come from the flex gap sitting on
+   the rack's own background, so there are no double borders between modules. */
+.mod {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  background: var(--ground-raised);
+}
+
+.mod--off {
+  background: var(--ground-sunken);
+}
+
+/* Live re-render in flight. A hairline at the top edge of the rack, nothing
+   that moves the layout or competes with the waveform. */
+.app--working .rack {
+  border-top-color: var(--signal);
+}
+
+.mod__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.mod__index {
+  font-size: var(--step--2);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The name is the power switch. One target, no extra chrome. */
+.mod__power {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 24px;
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+  transition: color var(--dur-fast) var(--ease-snap);
+}
+
+.mod__power::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--signal);
+  box-shadow: 0 0 8px var(--signal-glow);
+  transition: background-color var(--dur-fast) var(--ease-snap),
+    box-shadow var(--dur-fast) var(--ease-snap);
+}
+
+.mod--off .mod__power {
+  color: var(--ink-faint);
+}
+
+.mod--off .mod__power::before {
+  background: var(--ink-faint);
+  box-shadow: none;
+}
+
+.mod__power:hover .mod__name {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.mod__body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  align-items: flex-start;
+}
+
+.mod__note {
+  margin: 0;
+  align-self: center;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- knob */
+
+.knob {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  width: 58px;
+}
+
+.knob__dial {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  cursor: ns-resize;
+  touch-action: none;
+  border-radius: 50%;
+}
+
+.knob--off .knob__dial {
+  cursor: not-allowed;
+}
+
+.knob__track {
+  stroke: var(--hairline-strong);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.knob__fill {
+  stroke: var(--signal);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.knob__pointer {
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.knob--off .knob__fill {
+  stroke: var(--ink-faint);
+}
+
+.knob--off .knob__pointer {
+  stroke: var(--ink-faint);
+}
+
+.knob__dial:hover .knob__pointer {
+  stroke: var(--signal);
+}
+
+.knob__value {
+  font-size: var(--step--2);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.knob__label,
+.sel__label {
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  line-height: 1.1;
+}
+
+.knob--off .knob__value {
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- selector */
+
+.sel {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+
+.sel__row {
+  display: flex;
+  border: var(--edge) solid var(--hairline-strong);
+}
+
+.sel__opt {
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  font-size: var(--step--2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  transition: color var(--dur-fast) var(--ease-snap),
+    background-color var(--dur-fast) var(--ease-snap);
+}
+
+.sel__opt + .sel__opt {
+  border-left: var(--edge) solid var(--hairline-strong);
+}
+
+.sel__opt[aria-pressed='true'] {
+  background: var(--signal);
+  color: var(--ground);
+}
+
+.sel__opt:hover:not(:disabled):not([aria-pressed='true']) {
+  color: var(--ink);
+}
+
+.sel--off .sel__opt[aria-pressed='true'] {
+  background: var(--ink-faint);
+  color: var(--ground);
+}
+
+/* On touch, every control in the rack has to clear the 44pt target. On a
+   mouse they can stay tighter, which keeps the rack compact where it can be. */
+@media (pointer: coarse) {
+  .mod__power {
+    min-height: 44px;
+  }
+
+  .sel__opt {
+    min-height: 44px;
+    padding: 0 var(--sp-4);
+  }
+
+  .knob__dial {
+    width: 52px;
+    height: 52px;
+  }
+
+  .knob {
+    width: 64px;
+  }
 }
 
 /* ---------------------------------------------------------------- controls */

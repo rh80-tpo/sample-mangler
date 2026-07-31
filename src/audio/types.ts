@@ -1,9 +1,12 @@
 /** The five effects in the pool. */
 export type EffectId = 'reverse' | 'chop' | 'bitcrush' | 'pitch' | 'drive'
 
-export type ReverseSpec = { id: 'reverse' }
+/** Every effect can be switched out of the chain without losing its settings. */
+type Bypassable = { enabled: boolean }
 
-export type ChopSpec = {
+export type ReverseSpec = Bypassable & { id: 'reverse' }
+
+export type ChopSpec = Bypassable & {
   id: 'chop'
   segments: number
   /** Fraction of segments that get shuffled out of position. */
@@ -14,7 +17,7 @@ export type ChopSpec = {
   gate: number
 }
 
-export type BitcrushSpec = {
+export type BitcrushSpec = Bypassable & {
   id: 'bitcrush'
   /** Bit depth to quantize to. */
   bits: number
@@ -22,13 +25,13 @@ export type BitcrushSpec = {
   divisor: number
 }
 
-export type PitchSpec = {
+export type PitchSpec = Bypassable & {
   id: 'pitch'
   semitones: number
   windowSize: number
 }
 
-export type DriveSpec = {
+export type DriveSpec = Bypassable & {
   id: 'drive'
   amount: number
   oversample: 'none' | '2x' | '4x'

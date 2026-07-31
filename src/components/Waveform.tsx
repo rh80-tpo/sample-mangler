@@ -188,13 +188,18 @@ export function Waveform({
         <span className="wave__meta">{summary}</span>
       </div>
       <div className="wave__canvas" ref={wrapRef}>
-        <canvas ref={canvasRef} aria-hidden="true" />
+        {/* The canvas carries real information, so it is labelled rather than
+            hidden. The duration, channel count and rate in `summary` are the
+            accessible equivalent of the drawing. */}
+        <canvas
+          ref={canvasRef}
+          role="img"
+          aria-label={`${label} waveform. ${summary}.`}
+        />
         {!pcm && placeholder ? (
           <span className="wave__placeholder">{placeholder}</span>
         ) : null}
       </div>
-      {/* The drawing is decorative; this carries the same information. */}
-      <p className="sr-only" role="img" aria-label={`${label}. ${summary}`} />
     </div>
   )
 }

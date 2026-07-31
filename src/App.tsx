@@ -2,16 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { Waveform } from './components/Waveform'
 import { Playback } from './audio/playback'
-import { durationOf, pcmFrom, type Pcm } from './audio/buffers'
+import { durationOf, peakOf, pcmFrom, type Pcm } from './audio/buffers'
+import { sniffSampleRate } from './audio/sniff'
 import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
+import { Rack } from './components/Rack'
+import type { ChainSpec } from './audio/types'
 import { freshSeed } from './audio/rng'
 import { encodeWav } from './audio/wav'
 import './styles/app.css'
 
 type Result = { pcm: Pcm; seed: number }
 
+/** Renders in flight are coalesced, so a fast drag never queues up work. */
+type RenderQueue = {
+  running: boolean
+  pending: ChainSpec | null
+}
+
 const ACCEPT = 'audio/*,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a'
+
+/** Below this peak there is nothing to hear, so say so instead of pretending. */
+const SILENCE_FLOOR = 1e-4
 
 function fmtDuration(s: number): string {
   return `${s.toFixed(2)}s`
@@ -35,6 +47,9 @@ export function App() {
   const [source, setSource] = useState<Pcm | null>(null)
   const [fileName, setFileName] = useState('')
   const [result, setResult] = useState<Result | null>(null)
+  const [chain, setChain] = useState<ChainSpec | null>(null)
+  const [edited, setEdited] = useState(false)
+  const [tweaking, setTweaking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState('')
@@ -89,13 +104,21 @@ export function App() {
       setPlaying(false)
       setPlayhead(null)
       try {
-        const decoded = await playback.decode(await file.arrayBuffer())
+        const bytes = await file.arrayBuffer()
+        // Decode at the file's own rate when it declares one, so a 48k stem
+        // stays 48k instead of being quietly converted to the hardware rate.
+        const decoded = await playback.decode(bytes, sniffSampleRate(bytes))
         const pcm = pcmFrom(decoded)
         setSource(pcm)
         setFileName(file.name)
         setResult(null)
+        setChain(null)
+        setEdited(false)
         rollCount.current = 0
         setAnnounce(`Loaded ${file.name}, ${fmtDuration(durationOf(pcm))}.`)
+        if (peakOf(pcm) < SILENCE_FLOOR) {
+          setError('that file is silent. nothing to mangle.')
+        }
       } catch {
         setSource(null)
         setResult(null)
@@ -148,6 +171,70 @@ export function App() {
 
   useEffect(() => stopReveal, [stopReveal])
 
+  // --- live chain edits ----------------------------------------------
+  // A knob drag fires many changes a second. Renders are fast, but they are
+  // not free and they must not overlap, because each one swaps the global Tone
+  // context while it runs. So: one render at a time, and only the newest
+  // pending chain survives. Intermediate positions during a fast drag are
+  // dropped, which is correct, nobody needs to hear a value they swept past.
+  const queue = useRef<RenderQueue>({ running: false, pending: null })
+
+  const runRender = useCallback(
+    async (next: ChainSpec) => {
+      if (!source) return
+      if (queue.current.running) {
+        queue.current.pending = next
+        return
+      }
+      queue.current.running = true
+      setTweaking(true)
+      try {
+        let target: ChainSpec | null = next
+        while (target) {
+          const { pcm } = await renderChain(source, target)
+          setResult({ pcm, seed: target.seed })
+          target = queue.current.pending
+          queue.current.pending = null
+        }
+      } catch (e) {
+        setError(
+          e instanceof Error ? `that edit fell over. ${e.message}` : 'that edit fell over.',
+        )
+      } finally {
+        queue.current.running = false
+        setTweaking(false)
+      }
+    },
+    [source],
+  )
+
+  const onChainChange = useCallback(
+    (next: ChainSpec) => {
+      setChain(next)
+      setEdited(true)
+      setError('')
+      void runRender(next)
+    },
+    [runRender],
+  )
+
+  // When a control settles, pick playback back up where it was so a tweak can
+  // be heard in place instead of stopping the transport.
+  const resumeAfterEdit = useCallback(() => {
+    if (!playback.playing) return
+    const at = playback.progress() ?? 0
+    resumeAt.current = at
+  }, [playback])
+
+  const resumeAt = useRef<number | null>(null)
+
+  useEffect(() => {
+    const at = resumeAt.current
+    if (at == null || !result) return
+    resumeAt.current = null
+    void playback.play(result.pcm, at)
+  }, [result, playback])
+
   // --- the roll ------------------------------------------------------
   const mangle = useCallback(async () => {
     if (!source || busy) return
@@ -159,14 +246,28 @@ export function App() {
     setJolt((j) => j + 1)
 
     try {
+      // The offline render runs its clock synchronously, which is what makes
+      // it fast, but it also means the main thread is blocked while it works.
+      // Yield once so the busy state actually paints before that happens.
+      // On a short sample this is imperceptible; on a long one it is the
+      // difference between feedback and a dead-looking page.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
       const seed = freshSeed()
-      const chain = rollChain(seed, durationOf(source))
-      const { pcm } = await renderChain(source, chain)
+      const rolled = rollChain(seed, durationOf(source))
+      const { pcm } = await renderChain(source, rolled)
       rollCount.current += 1
       setResult({ pcm, seed })
+      setChain(rolled)
+      setEdited(false)
       setAnnounce(
         `Roll ${rollCount.current}. ${fmtDuration(durationOf(pcm))} of mangled audio ready.`,
       )
+      // A chain can gate or filter a sample down to nothing. Exporting that
+      // silently would hand back a dead file with no explanation.
+      if (peakOf(pcm) < SILENCE_FLOOR && peakOf(source) >= SILENCE_FLOOR) {
+        setError('that chain ate the whole signal. reroll it.')
+      }
 
       startReveal()
     } catch (e) {
@@ -188,13 +289,16 @@ export function App() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${baseName(fileName)}-mangled-${result.seed.toString(36)}.wav`
+    // The seed alone reproduces a rolled chain but not a hand-edited one, so
+    // the name says which it is rather than implying it can be recreated.
+    const stamp = edited ? `${result.seed.toString(36)}-edit` : result.seed.toString(36)
+    a.download = `${baseName(fileName)}-mangled-${stamp}.wav`
     document.body.appendChild(a)
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 4000)
     setAnnounce(`Exported ${a.download}.`)
-  }, [result, fileName])
+  }, [result, fileName, edited])
 
   // --- drag and drop -------------------------------------------------
   const onDrop = useCallback(
@@ -262,6 +366,10 @@ export function App() {
     'app',
     hasResult ? 'app--live' : '',
     dragging ? 'app--dragging' : '',
+    // A visual-only cue while a re-render is in flight. Deliberately not fed
+    // into the aria labels: a knob drag would otherwise spam a screen reader
+    // with status changes many times a second.
+    tweaking ? 'app--working' : '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -312,7 +420,7 @@ export function App() {
                 label="mangled"
                 summary={
                   result
-                    ? `${summarise(result.pcm)} · roll ${rollCount.current}`
+                    ? `${summarise(result.pcm)} · roll ${rollCount.current}${edited ? ' · edited' : ''}`
                     : 'not yet'
                 }
                 reveal={reveal}
@@ -324,7 +432,13 @@ export function App() {
           ) : (
             /* The idle state is the instrument with no signal in it, not a
                separate upload screen sitting in front of it. */
-            <div className="drop">
+            /* The whole panel is the target, not just the small button. The
+               button stays as the keyboard and screen-reader path. */
+            <div
+              className="drop"
+              onClick={() => fileInput.current?.click()}
+              role="presentation"
+            >
               <Waveform
                 pcm={null}
                 tone="source"
@@ -349,6 +463,15 @@ export function App() {
           )}
         </section>
 
+        {chain ? (
+          <Rack
+            chain={chain}
+            onChange={onChainChange}
+            onCommit={resumeAfterEdit}
+            busy={busy}
+          />
+        ) : null}
+
         <footer className="controls">
           <button
             type="button"
@@ -356,6 +479,8 @@ export function App() {
             onClick={togglePlay}
             disabled={!current}
             aria-pressed={playing}
+            aria-keyshortcuts="Space"
+            title="Space"
           >
             {playing ? 'stop' : 'play'}
             <span className="sr-only">
@@ -368,6 +493,8 @@ export function App() {
             className="btn btn--slab"
             onClick={() => void mangle()}
             disabled={!source || busy}
+            aria-keyshortcuts="R"
+            title="R"
           >
             <span className="btn__slabtext">
               {busy ? 'mangling' : hasResult ? 'reroll' : 'mangle'}

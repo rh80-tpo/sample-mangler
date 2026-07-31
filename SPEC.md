@@ -78,14 +78,22 @@ sample against the render buffer.
 
 No backend, no database, no accounts. The audio file never leaves the browser.
 
-## Out of scope, deliberately
+## Scope change, mid-build
 
-- Lock / reroll of individual effects, or any per-effect control
+Per-effect control was originally cut from v0. Ryan reversed that during the
+build: every parameter that changes the audio now gets a control, adjustable
+live.
+
+That means the rack exists, and it necessarily shows which effects are in the
+current chain. The reroll still replaces the whole chain, and effect *order* is
+still only ever set by a roll, never by hand.
+
+## Still out of scope
+
 - Accounts, saved history, any persistence
 - Video processing of any kind, including a placeholder for it
-- Effect chain visualization or a mixer UI
-
-The constraint is the point of v0. Do not build toward the cut items.
+- A mixer UI, sends, or routing
+- Reordering the chain by hand
 
 ## Parameter ranges
 

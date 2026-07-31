@@ -9,6 +9,7 @@
  * Open /verify.html on the dev server and press the button.
  */
 import { describeChain, rollChain } from './audio/chain'
+import type { ChainSpec, EffectSpec } from './audio/types'
 import { durationOf, peakOf, pcmFrom, rmsOf, type Pcm } from './audio/buffers'
 import { renderChain } from './audio/render'
 import { encodeWav, QUANTISATION_STEP } from './audio/wav'
@@ -91,7 +92,9 @@ async function run() {
 
     const results: { pcm: Pcm; desc: string }[] = []
 
-    for (let roll = 0; roll < 6; roll++) {
+    // Enough rolls that the rarer shapes, especially the one-effect roll that
+    // has to carry itself, actually come up.
+    for (let roll = 0; roll < 14; roll++) {
       const seed = freshSeed()
       const chain = rollChain(seed, durationOf(original))
       const { pcm, elapsedMs } = await renderChain(original, chain)
@@ -159,6 +162,102 @@ async function run() {
       identical === 0,
       `${identical} identical pairs of 15, worst-case corr ${maxPairCorr.toFixed(4)}`,
     )
+    log()
+  }
+
+  // --- the dials actually move the audio -------------------------------
+  // A control that redraws a label but leaves the render alone would be worse
+  // than no control at all. For every parameter the rack exposes, render the
+  // chain at two different values and confirm the audio is genuinely
+  // different.
+  {
+    log('=== every rack control changes the render ===')
+    log()
+    const original = await loadFixture(ctx, 'drums.wav')
+    const dur = durationOf(original)
+
+    const cases: { name: string; a: ChainSpec; b: ChainSpec }[] = []
+    const only = (spec: EffectSpec): ChainSpec => ({ seed: 1, effects: [spec] })
+
+    cases.push({
+      name: 'reverse enabled',
+      a: only({ id: 'reverse', enabled: false }),
+      b: only({ id: 'reverse', enabled: true }),
+    })
+    const chopBase = { id: 'chop' as const, enabled: true, segments: 12, reorder: 0.4, repeat: 0.3, gate: 0.1 }
+    cases.push(
+      { name: 'chop slices', a: only({ ...chopBase, segments: 6 }), b: only({ ...chopBase, segments: 40 }) },
+      { name: 'chop scatter', a: only({ ...chopBase, reorder: 0 }), b: only({ ...chopBase, reorder: 1 }) },
+      { name: 'chop stutter', a: only({ ...chopBase, repeat: 0 }), b: only({ ...chopBase, repeat: 0.9 }) },
+      { name: 'chop gate', a: only({ ...chopBase, repeat: 0.9, gate: 0 }), b: only({ ...chopBase, repeat: 0.9, gate: 1 }) },
+    )
+    const crushBase = { id: 'bitcrush' as const, enabled: true, bits: 8, divisor: 4 }
+    cases.push(
+      { name: 'bitcrush bits', a: only({ ...crushBase, bits: 16 }), b: only({ ...crushBase, bits: 2 }) },
+      { name: 'bitcrush rate', a: only({ ...crushBase, divisor: 1 }), b: only({ ...crushBase, divisor: 24 }) },
+    )
+    const pitchBase = { id: 'pitch' as const, enabled: true, semitones: 0, windowSize: 0.05 }
+    cases.push(
+      { name: 'pitch semitones', a: only({ ...pitchBase, semitones: -12 }), b: only({ ...pitchBase, semitones: 7 }) },
+      { name: 'pitch grain', a: only({ ...pitchBase, semitones: 5, windowSize: 0.01 }), b: only({ ...pitchBase, semitones: 5, windowSize: 0.25 }) },
+    )
+    const driveBase = { id: 'drive' as const, enabled: true, amount: 0.5, oversample: '2x' as const }
+    cases.push(
+      { name: 'drive amount', a: only({ ...driveBase, amount: 0.02 }), b: only({ ...driveBase, amount: 0.98 }) },
+      { name: 'drive alias', a: only({ ...driveBase, amount: 0.9, oversample: 'none' }), b: only({ ...driveBase, amount: 0.9, oversample: '4x' }) },
+      { name: 'drive bypass', a: only({ ...driveBase, amount: 0.95, enabled: false }), b: only({ ...driveBase, amount: 0.95, enabled: true }) },
+    )
+
+    for (const c of cases) {
+      void dur
+      const ra = await renderChain(original, c.a)
+      const rb = await renderChain(original, c.b)
+      const sim = similarity(ra.pcm, rb.pcm)
+      const lenA = ra.pcm.channels[0].length
+      const lenB = rb.pcm.channels[0].length
+      // Either the waveform correlation moved or the length did. Both mean the
+      // knob reached the renderer.
+      const moved = sim < 0.995 || lenA !== lenB
+      check(
+        c.name,
+        moved,
+        `corr ${sim.toFixed(4)}, frames ${lenA} vs ${lenB}`,
+      )
+    }
+    log()
+  }
+
+  // --- memory ---------------------------------------------------------
+  // Every node pass builds an offline context and a node graph. If those are
+  // not disposed the heap climbs with every roll, which on a long sample gets
+  // to gigabytes fast. This is the regression guard for that.
+  const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } })
+    .memory
+  if (mem) {
+    log('=== memory across 24 rolls ===')
+    log()
+    const original = await loadFixture(ctx, 'drums.wav')
+    const mb = () => Math.round(mem.usedJSHeapSize / 1048576)
+    const before = mb()
+    let peakMb = before
+    for (let i = 0; i < 24; i++) {
+      const chain = rollChain(freshSeed(), durationOf(original))
+      await renderChain(original, chain)
+      peakMb = Math.max(peakMb, mb())
+    }
+    const after = mb()
+    log(`  start ${before}MB   peak ${peakMb}MB   end ${after}MB`)
+    // 24 rolls of a 3.75s stereo sample. Each intermediate buffer is about
+    // 1.3MB, so a working set of a few tens of MB is expected; hundreds means
+    // contexts are being retained.
+    check(
+      'heap does not run away',
+      after - before < 300,
+      `growth ${after - before}MB over 24 rolls (limit 300MB)`,
+    )
+    log()
+  } else {
+    log('(performance.memory unavailable, skipping the heap check)')
     log()
   }
 

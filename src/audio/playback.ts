@@ -23,11 +23,44 @@ export class Playback {
     return this.context().sampleRate
   }
 
-  async decode(file: ArrayBuffer): Promise<AudioBuffer> {
-    return this.context().decodeAudioData(file)
+  /**
+   * Reopen the context at a specific rate so a decode does not resample.
+   * Falls back to whatever context we already have if the browser will not
+   * give us that rate.
+   */
+  private async contextAt(rate: number | null): Promise<AudioContext> {
+    if (!rate || this.ctx?.sampleRate === rate) return this.context()
+    try {
+      const next = new AudioContext({ sampleRate: rate })
+      if (next.sampleRate !== rate) {
+        void next.close()
+        return this.context()
+      }
+      this.stop()
+      void this.ctx?.close()
+      this.ctx = next
+      return next
+    } catch {
+      return this.context()
+    }
   }
 
-  async play(pcm: Pcm) {
+  /**
+   * Decode at `preferredRate` when the file declares one, so the sample keeps
+   * its original rate all the way through to the exported WAV.
+   */
+  async decode(
+    file: ArrayBuffer,
+    preferredRate: number | null = null,
+  ): Promise<AudioBuffer> {
+    const ctx = await this.contextAt(preferredRate)
+    // decodeAudioData detaches the buffer it is given, so hand it a copy and
+    // keep the original readable for a retry.
+    return ctx.decodeAudioData(file.slice(0))
+  }
+
+  /** `from` is a 0..1 position, used to pick playback back up after an edit. */
+  async play(pcm: Pcm, from = 0) {
     const ctx = this.context()
     if (ctx.state === 'suspended') await ctx.resume()
     this.stop()
@@ -43,8 +76,9 @@ export class Playback {
     }
     this.source = source
     this.duration = source.buffer.duration
-    this.startedAt = ctx.currentTime
-    source.start()
+    const offset = Math.max(0, Math.min(0.999, from)) * this.duration
+    this.startedAt = ctx.currentTime - offset
+    source.start(0, offset)
   }
 
   stop() {

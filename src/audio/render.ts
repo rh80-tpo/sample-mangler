@@ -72,14 +72,18 @@ async function renderNodePass(pcm: Pcm, ops: Op[]): Promise<Pcm> {
   const offline = new Tone.OfflineContext(channels, duration, pcm.sampleRate)
   const previous = Tone.getContext()
   Tone.setContext(offline)
+
+  const created: { dispose: () => unknown }[] = []
   try {
     const buf = new Tone.ToneAudioBuffer()
     buf.fromArray(pcm.channels.length === 1 ? pcm.channels[0] : pcm.channels)
 
     const source = new Tone.ToneBufferSource(buf)
+    created.push(source, buf)
     let node: Tone.ToneAudioNode = source
     for (const op of ops) {
       const fx = makeNode(op.spec)
+      created.push(fx)
       node.connect(fx)
       node = fx
     }
@@ -89,9 +93,26 @@ async function renderNodePass(pcm: Pcm, ops: Op[]): Promise<Pcm> {
     const rendered = await offline.render(false)
     const audioBuffer =
       rendered instanceof AudioBuffer ? rendered : (rendered.get() as AudioBuffer)
+    // Copy out before the context goes away: pcmFrom clones every channel, so
+    // nothing downstream still points into the offline context's buffer.
     return pcmFrom(audioBuffer)
   } finally {
     Tone.setContext(previous)
+    // Every pass builds a whole context and node graph. Without this they stay
+    // reachable, and a few rolls on a long sample push the heap past a
+    // gigabyte. Measured: 1382MB after three rolls on a 60s stereo file.
+    for (const node of created) {
+      try {
+        node.dispose()
+      } catch {
+        // Already gone. Nothing to do.
+      }
+    }
+    try {
+      offline.dispose()
+    } catch {
+      // Already gone. Nothing to do.
+    }
   }
 }
 
