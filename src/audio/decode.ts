@@ -13,8 +13,35 @@ import type { Pcm } from './buffers'
  * majority of what a DAW writes.
  */
 
+/**
+ * Limits, measured rather than guessed.
+ *
+ * Decoded audio is Float32, so a stereo 48k minute costs about 22MB of heap
+ * whatever the file was compressed to, and the render pipeline holds several
+ * of those at once. Measured on this machine:
+ *
+ *   60s   15MB file    22MB decoded   0.7s per roll    115MB heap
+ *   3min  49MB file    66MB decoded   7.5s per roll    436MB heap
+ *   10min 165MB file  220MB decoded  15.8s per roll   1433MB heap
+ *
+ * Ten minutes still completes, but a 16 second freeze per roll is not a tool
+ * you can use, and the heap is close to where a tab gets killed. So: refuse
+ * past ten minutes, and say so plainly rather than locking up and dying.
+ */
+export const MAX_SECONDS = 600
+export const WARN_SECONDS = 200
+/**
+ * Checked before reading the file, from `File.size` alone. 24-bit stereo 48k
+ * runs about 17MB a minute, so this is roughly twenty minutes of the heaviest
+ * format anyone actually renders. The point is to refuse before pulling a
+ * gigabyte into memory, not to be exact.
+ */
+export const MAX_BYTES = 400 * 1024 * 1024
+
 export type DecodeFailure =
   | 'empty'
+  | 'too-large'
+  | 'too-long'
   | 'unknown-format'
   | 'compressed-aifc'
   | 'undecodable'
@@ -249,12 +276,42 @@ export async function decodeAudio(
   )
 }
 
+/**
+ * Cheap pre-flight on the File itself, before any of it is read into memory.
+ * Returns an error to report, or null to go ahead.
+ */
+export function checkFileSize(bytes: number): DecodeError | null {
+  if (bytes === 0) return new DecodeError('empty', 'that file is empty')
+  if (bytes > MAX_BYTES) {
+    return new DecodeError(
+      'too-large',
+      `that file is ${(bytes / 1048576).toFixed(0)}MB`,
+    )
+  }
+  return null
+}
+
+/** Applied after decoding, when the real duration is known. */
+export function checkDuration(seconds: number): DecodeError | null {
+  if (seconds > MAX_SECONDS) {
+    return new DecodeError(
+      'too-long',
+      `that is ${Math.round(seconds / 60)} minutes long`,
+    )
+  }
+  return null
+}
+
 /** Message for the interface, per failure reason. */
 export function describeFailure(e: unknown): string {
   if (e instanceof DecodeError) {
     switch (e.reason) {
       case 'empty':
         return 'that file is empty.'
+      case 'too-large':
+        return `${e.message}. the ceiling is ${Math.round(MAX_BYTES / 1048576)}MB, which is about twenty minutes of 24 bit stereo.`
+      case 'too-long':
+        return `${e.message}. the ceiling is ${MAX_SECONDS / 60} minutes. trim it in your daw first.`
       case 'compressed-aifc':
         return `${e.message}. render it uncompressed and try again.`
       default:

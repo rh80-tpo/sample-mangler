@@ -4,7 +4,13 @@ import { Waveform } from './components/Waveform'
 import { Playback } from './audio/playback'
 import { durationOf, peakOf, pcmFrom, type Pcm } from './audio/buffers'
 import { sniffSampleRate } from './audio/sniff'
-import { decodeAudio, describeFailure } from './audio/decode'
+import {
+  WARN_SECONDS,
+  checkDuration,
+  checkFileSize,
+  decodeAudio,
+  describeFailure,
+} from './audio/decode'
 import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
 import { Rack } from './components/Rack'
@@ -294,14 +300,30 @@ export function App() {
       setPlaying(false)
       setPlayhead(null)
       try {
+        // Checked from File.size before anything is read, so an enormous file
+        // is refused instead of pulling a gigabyte into memory first.
+        const tooBig = checkFileSize(file.size)
+        if (tooBig) throw tooBig
+
         const bytes = await file.arrayBuffer()
         // Decode at the file's own rate when it declares one, so a 48k stem
         // stays 48k instead of being quietly converted to the hardware rate.
         const rate = sniffSampleRate(bytes)
         const pcm = await decodeAudio(bytes, (b) => playback.decode(b, rate))
+
+        const tooLong = checkDuration(durationOf(pcm))
+        if (tooLong) throw tooLong
+
         adopt(pcm, file.name)
+        const seconds = durationOf(pcm)
         if (peakOf(pcm) < SILENCE_FLOOR) {
           setError('that file is silent. nothing to mangle.')
+        } else if (seconds > WARN_SECONDS) {
+          // Not a failure, just honest: past this length every roll takes
+          // seconds and the page will sit still while it works.
+          setError(
+            `${Math.round(seconds)}s loaded. anything this long takes a few seconds per roll.`,
+          )
         }
       } catch (e) {
         setSource(null)
