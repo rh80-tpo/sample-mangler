@@ -126,6 +126,87 @@ function readSamples(view: DataView, spec: RawPcm): Pcm {
   return { channels: out, sampleRate: spec.sampleRate }
 }
 
+/**
+ * RIFF/WAVE, plus RF64 and BW64.
+ *
+ * There is a native decoder for plain wav, so this is the fallback for the
+ * ones it rejects. RF64 and BW64 are the big-file variants a DAW writes when a
+ * render passes 4GB (and some write always) and they are not RIFF, so the
+ * browser refuses them outright. WAVE_FORMAT_EXTENSIBLE is handled too, since
+ * multichannel and high bit depth renders use it as a matter of course.
+ */
+function parseWav(view: DataView): Pcm | null {
+  const magic = ascii(view, 0)
+  if (magic !== 'RIFF' && magic !== 'RF64' && magic !== 'BW64') return null
+  if (ascii(view, 8) !== 'WAVE') return null
+
+  let pos = 12
+  let fmt: {
+    format: number
+    channels: number
+    sampleRate: number
+    bits: number
+  } | null = null
+  let dataAt = -1
+  let dataSize = 0
+  // RF64 parks the real 64-bit sizes in a ds64 chunk and writes -1 in the
+  // 32-bit fields.
+  let ds64DataSize = -1
+
+  while (pos + 8 <= view.byteLength) {
+    const id = ascii(view, pos)
+    let size = view.getUint32(pos + 4, true)
+    const body = pos + 8
+
+    if (id === 'ds64' && body + 16 <= view.byteLength) {
+      ds64DataSize = Number(view.getBigUint64(body + 8, true))
+    } else if (id === 'fmt ' && body + 16 <= view.byteLength) {
+      let format = view.getUint16(body, true)
+      const channels = view.getUint16(body + 2, true)
+      const sampleRate = view.getUint32(body + 4, true)
+      const bits = view.getUint16(body + 14, true)
+      // Extensible: the real format code lives in the subformat GUID.
+      if (format === 0xfffe && body + 26 <= view.byteLength) {
+        format = view.getUint16(body + 24, true)
+      }
+      fmt = { format, channels, sampleRate, bits }
+    } else if (id === 'data') {
+      dataAt = body
+      if (size === 0xffffffff && ds64DataSize >= 0) size = ds64DataSize
+      dataSize = size
+    }
+
+    if (size === 0xffffffff || size <= 0) {
+      // Unknown or streamed size: take the rest of the file.
+      if (dataAt >= 0 && dataSize <= 0) dataSize = view.byteLength - dataAt
+      break
+    }
+    pos = body + size + (size % 2)
+  }
+
+  if (!fmt || dataAt < 0) return null
+  if (fmt.format !== 1 && fmt.format !== 3) {
+    throw new DecodeError(
+      'undecodable',
+      `this wav holds compressed audio (format ${fmt.format})`,
+    )
+  }
+
+  const usable = Math.min(dataSize, view.byteLength - dataAt)
+  const bytesPerFrame = (fmt.bits / 8) * fmt.channels
+  if (bytesPerFrame <= 0) return null
+
+  return readSamples(view, {
+    channels: fmt.channels,
+    bits: fmt.bits,
+    sampleRate: fmt.sampleRate,
+    float: fmt.format === 3,
+    littleEndian: true,
+    start: dataAt,
+    frames: Math.floor(usable / bytesPerFrame),
+  })
+}
+
 /** AIFF and AIFC. */
 function parseAiff(view: DataView): Pcm | null {
   if (ascii(view, 0) !== 'FORM') return null
@@ -267,13 +348,56 @@ export async function decodeAudio(
   const view = new DataView(bytes)
   // A DecodeError from a parser is specific and worth surfacing, so it is
   // deliberately not swallowed here.
-  const parsed = parseAiff(view) ?? parseCaf(view)
+  const parsed = parseWav(view) ?? parseAiff(view) ?? parseCaf(view)
   if (parsed && parsed.channels[0].length > 0) return parsed
 
-  throw new DecodeError(
-    'undecodable',
-    'this browser cannot read that file',
-  )
+  // Nothing could read it, so say what it actually appears to be. A vague
+  // failure on a file that is sitting right there is useless.
+  throw new DecodeError('undecodable', identify(view, bytes.byteLength))
+}
+
+/**
+ * Best guess at what a file is, from its first bytes. Used only to make the
+ * failure message specific enough to act on.
+ */
+export function identify(view: DataView, length: number): string {
+  if (length < 12) return 'that file is too short to be audio'
+  const head = ascii(view, 0)
+  // In an mp4/m4a the brand box starts at byte 4, not 8.
+  const brand = ascii(view, 4)
+
+  if (head === 'RIFF' || head === 'RF64' || head === 'BW64') {
+    return `that wav is damaged or uses a codec nothing here can read`
+  }
+  if (head === 'FORM') return 'that aiff is damaged or compressed'
+  if (head === 'caff') return 'that caf holds compressed audio'
+  if (head === 'OggS') return 'that ogg uses a codec this browser lacks'
+  if (head === 'fLaC') return 'that flac is damaged'
+  if (head.startsWith('ID3') || (view.getUint8(0) === 0xff && (view.getUint8(1) & 0xe0) === 0xe0)) {
+    return 'that mp3 is damaged'
+  }
+  if (brand === 'ftyp') {
+    // Apple Lossless lives in an mp4 container and Chromium cannot decode it,
+    // which is exactly what Logic and Music.app export by default. The codec
+    // name sits in the moov atom, which can be at either end of the file, so
+    // both ends get scanned rather than just the head.
+    const latin = new TextDecoder('latin1')
+    const window = 262144
+    const head = latin.decode(new Uint8Array(view.buffer, 0, Math.min(length, window)))
+    const tailAt = Math.max(0, length - window)
+    const tail =
+      tailAt > 0 ? latin.decode(new Uint8Array(view.buffer, tailAt, length - tailAt)) : ''
+    if (head.includes('alac') || tail.includes('alac')) {
+      return 'that m4a is apple lossless, which no browser decodes. render it as wav or aiff'
+    }
+    return 'that m4a uses a codec this browser cannot decode'
+  }
+  if (head === 'riff') {
+    return 'that is a wave64 file. export it as a normal wav or aiff'
+  }
+  if (head.slice(0, 2) === '0&') return 'that looks like a wma file'
+
+  return 'that is not an audio format anything here recognises'
 }
 
 /**
@@ -302,6 +426,34 @@ export function checkDuration(seconds: number): DecodeError | null {
   return null
 }
 
+/**
+ * The raw facts about a file that would not load: what the browser called it,
+ * how big it is, and the actual first bytes of the header. This is what makes
+ * an unreproducible "it will not take my file" into one answerable line.
+ */
+export async function describeFile(file: File): Promise<string> {
+  const bits: string[] = []
+  bits.push(`${(file.size / 1048576).toFixed(2)}MB`)
+  bits.push(`type "${file.type || 'none'}"`)
+  try {
+    const head = await file.slice(0, 16).arrayBuffer()
+    const b = new Uint8Array(head)
+    let tag = ''
+    for (let i = 0; i < Math.min(12, b.length); i++) {
+      const c = b[i]
+      tag += c >= 32 && c < 127 ? String.fromCharCode(c) : '.'
+    }
+    const hex = Array.from(b.slice(0, 8))
+      .map((x) => x.toString(16).padStart(2, '0'))
+      .join(' ')
+    bits.push(`header "${tag}"`)
+    bits.push(hex)
+  } catch {
+    bits.push('header unreadable')
+  }
+  return bits.join(' · ')
+}
+
 /** Message for the interface, per failure reason. */
 export function describeFailure(e: unknown): string {
   if (e instanceof DecodeError) {
@@ -314,8 +466,14 @@ export function describeFailure(e: unknown): string {
         return `${e.message}. the ceiling is ${MAX_SECONDS / 60} minutes. trim it in your daw first.`
       case 'compressed-aifc':
         return `${e.message}. render it uncompressed and try again.`
-      default:
-        return `${e.message}. wav, aiff, mp3, flac and m4a all work.`
+      default: {
+        // identify() often already says what to do. Only add the generic
+        // fallback when it did not.
+        const guided = /export|render|damaged|decode/.test(e.message)
+        return guided
+          ? `${e.message}.`
+          : `${e.message}. wav, aiff, mp3, flac and m4a all work.`
+      }
     }
   }
   return 'could not read that one. wav, aiff, mp3, flac and m4a all work.'

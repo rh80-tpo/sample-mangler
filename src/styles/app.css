@@ -1003,12 +1003,25 @@
 /* ---------------------------------------------------------------- notice */
 
 .notice {
-  margin: 0;
   padding: var(--sp-3) var(--sp-4);
   border: var(--edge) solid color-mix(in srgb, var(--signal) 55%, transparent);
   background: var(--signal-wash);
   color: var(--ink);
   font-size: var(--step--1);
+}
+
+.notice__msg {
+  margin: 0;
+}
+
+/* The raw header, for when a file that works everywhere else will not load
+   here. Selectable on purpose: it is meant to be copied and sent. */
+.notice__detail {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--step--2);
+  color: var(--ink-dim);
+  user-select: all;
+  word-break: break-all;
 }
 
 /* ---------------------------------------------------------------- small */

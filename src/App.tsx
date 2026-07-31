@@ -10,6 +10,7 @@ import {
   checkFileSize,
   decodeAudio,
   describeFailure,
+  describeFile,
 } from './audio/decode'
 import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
@@ -111,6 +112,8 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState('')
+  /** Raw header facts, shown only when a file fails to load. */
+  const [detail, setDetail] = useState('')
   const [reveal, setReveal] = useState(1)
   const [playhead, setPlayhead] = useState<number | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -295,6 +298,7 @@ export function App() {
   const loadFile = useCallback(
     async (file: File) => {
       setError('')
+      setDetail('')
       setBusy(true)
       playback.stop()
       setPlaying(false)
@@ -331,6 +335,10 @@ export function App() {
         // Say what actually went wrong. "Unsupported" and "empty" and
         // "compressed" are different problems with different fixes.
         setError(describeFailure(e))
+        // And leave the raw facts on screen. When a file that plays fine
+        // everywhere else will not load, the useful thing is the header and
+        // the type the browser reported, not a friendlier sentence.
+        setDetail(await describeFile(file))
       } finally {
         setBusy(false)
       }
@@ -921,9 +929,10 @@ export function App() {
         />
 
         {error ? (
-          <p className="notice" role="alert">
-            {error}
-          </p>
+          <div className="notice" role="alert">
+            <p className="notice__msg">{error}</p>
+            {detail ? <p className="notice__detail">{detail}</p> : null}
+          </div>
         ) : null}
 
         <p className="sr-only" role="status" aria-live="polite">
