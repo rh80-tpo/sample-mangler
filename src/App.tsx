@@ -128,7 +128,17 @@ export function App() {
   // Loop is on by default: this is a tool for auditioning loops and chops, and
   // hearing one pass of a candidate tells you almost nothing about it.
   const [loop, setLoop] = useState(true)
-  const [region, setRegion] = useState<Region | null>(null)
+  /**
+   * One selection per panel. A selection on the source decides what actually
+   * gets mangled, which is how you pull two bars of a vocal out of a five
+   * minute track instead of processing the whole thing.
+   */
+  const [regions, setRegions] = useState<{
+    source: Region | null
+    mangled: Region | null
+  }>({ source: null, mangled: null })
+  /** What stage a file load is at, so a slow one does not look like nothing. */
+  const [stage, setStage] = useState('')
   const [fit, setFit] = useState<FitSpec>(NO_FIT)
   // Read through a ref so the render callbacks do not have to be rebuilt (and
   // the render queue reset) every time a length control moves.
@@ -166,7 +176,15 @@ export function App() {
     target === 'source' ? source : (result?.pcm ?? source)
 
   /** A selection only applies to the panel it was drawn on. */
-  const activeRegion = regionIsReal(region) ? region : null
+  const regionOf = useCallback(
+    (which: 'source' | 'mangled') =>
+      regionIsReal(regions[which]) ? regions[which] : null,
+    [regions],
+  )
+  const sourceRegion = regionOf('source')
+  const mangledRegion = regionOf('mangled')
+  /** The selection on whichever panel the transport is pointed at. */
+  const activeRegion = regionOf(target)
 
   const togglePlay = useCallback(async () => {
     if (!current) return
@@ -186,26 +204,38 @@ export function App() {
     async (which: 'source' | 'mangled', position: number) => {
       const pcm = which === 'source' ? source : result?.pcm
       if (!pcm) return
-      const samePanel = which === target
       setTarget(which)
       setCursor(position)
       setPlayhead(position)
-      await playback.play(pcm, position, {
-        loop,
-        region: samePanel ? activeRegion : null,
-      })
+      await playback.play(pcm, position, { loop, region: regionOf(which) })
       setPlaying(true)
     },
-    [source, result, playback, target, loop, activeRegion],
+    [source, result, playback, loop, regionOf],
   )
 
   /** Selecting a region restarts playback inside it, so you hear the edit. */
   const changeRegion = useCallback(
     (which: 'source' | 'mangled', next: Region | null) => {
       setTarget(which)
-      setRegion(next)
+      setRegions((prev) => ({ ...prev, [which]: next }))
       const pcm = which === 'source' ? source : result?.pcm
       if (!pcm) return
+
+      // The output length is snapped against whatever is actually going in.
+      // Selecting four seconds out of a fifteen minute track must not still be
+      // aiming at the sixteen bars the whole file suggested.
+      if (which === 'source') {
+        const real = regionIsReal(next) ? next : null
+        const seconds = real
+          ? regionSeconds(real, durationOf(pcm))
+          : durationOf(pcm)
+        const bars = nearestBars(seconds)
+        if (fitRef.current.bars !== null && fitRef.current.bars !== bars) {
+          const nextFit: FitSpec = { ...fitRef.current, bars }
+          setFit(nextFit)
+          fitRef.current = nextFit
+        }
+      }
       const real = regionIsReal(next) ? next : null
       if (playback.playing || (real && loop)) {
         setCursor(real ? real.start : 0)
@@ -239,7 +269,7 @@ export function App() {
       setEdited(false)
       setTarget('mangled')
       setCursor(0)
-      setRegion(null)
+      setRegions({ source: null, mangled: null })
       // Snap to the nearest musical length so the first roll is already on the
       // grid and loopable, rather than an arbitrary tail you have to fix.
       const bars = nearestBars(durationOf(pcm))
@@ -309,7 +339,15 @@ export function App() {
         const tooBig = checkFileSize(file.size)
         if (tooBig) throw tooBig
 
+        // Reading a 70MB file off disk and decoding it both take real time.
+        // Without saying so, a slow load is indistinguishable from a dead
+        // page, which is what made large files feel like a failure.
+        setStage(`reading ${(file.size / 1048576).toFixed(1)}MB`)
+        await new Promise((r) => setTimeout(r, 0))
         const bytes = await file.arrayBuffer()
+
+        setStage('decoding')
+        await new Promise((r) => setTimeout(r, 0))
         // Decode at the file's own rate when it declares one, so a 48k stem
         // stays 48k instead of being quietly converted to the hardware rate.
         const rate = sniffSampleRate(bytes)
@@ -340,6 +378,7 @@ export function App() {
         // the type the browser reported, not a friendlier sentence.
         setDetail(await describeFile(file))
       } finally {
+        setStage('')
         setBusy(false)
       }
     },
@@ -395,8 +434,15 @@ export function App() {
   // dropped, which is correct, nobody needs to hear a value they swept past.
   const queue = useRef<RenderQueue>({ running: false, pending: null })
 
+  /**
+   * Exactly what the current result was rendered from. Live dial edits must
+   * re-render the same input the roll used, not the whole source again.
+   */
+  const inputRef = useRef<Pcm | null>(null)
+
   const runRender = useCallback(
     async (next: ChainSpec) => {
+      const source = inputRef.current
       if (!source) return
       if (queue.current.running) {
         queue.current.pending = next
@@ -421,7 +467,7 @@ export function App() {
         setTweaking(false)
       }
     },
-    [source],
+    [],
   )
 
   const onChainChange = useCallback(
@@ -439,8 +485,9 @@ export function App() {
     (next: FitSpec) => {
       setFit(next)
       fitRef.current = next
-      // A different length invalidates any selection drawn on the old one.
-      setRegion(null)
+      // A different output length invalidates a selection drawn on the old
+      // one. The source selection still stands: it decides the input.
+      setRegions((prev) => ({ ...prev, mangled: null }))
       setCursor(0)
       if (chain) {
         setEdited(true)
@@ -485,9 +532,14 @@ export function App() {
       // difference between feedback and a dead-looking page.
       await new Promise((resolve) => setTimeout(resolve, 0))
 
+      // A selection on the source is the input. Loading a whole track and
+      // grabbing two bars of the vocal out of it is the point, and it also
+      // means a long source never costs a long render.
+      const input = sourceRegion ? slicePcm(source, sourceRegion) : source
+      inputRef.current = input
       const seed = freshSeed()
-      const rolled = rollChain(seed, durationOf(source))
-      const { pcm } = await renderChain(source, rolled, fitRef.current)
+      const rolled = rollChain(seed, durationOf(input))
+      const { pcm } = await renderChain(input, rolled, fitRef.current)
       rollCount.current += 1
       setResult({ pcm, seed })
       setChain(rolled)
@@ -515,7 +567,7 @@ export function App() {
     } finally {
       setBusy(false)
     }
-  }, [source, busy, playback, startReveal])
+  }, [source, busy, playback, startReveal, sourceRegion])
 
   // --- export and save -------------------------------------------------
   /**
@@ -525,18 +577,17 @@ export function App() {
    */
   const outputPcm = useCallback((): Pcm | null => {
     if (!result) return null
-    const useRegion = target === 'mangled' && activeRegion
-    return useRegion ? slicePcm(result.pcm, activeRegion) : result.pcm
-  }, [result, target, activeRegion])
+    return mangledRegion ? slicePcm(result.pcm, mangledRegion) : result.pcm
+  }, [result, mangledRegion])
 
   const outputName = useCallback((): string => {
     if (!result) return 'mangled'
     // The seed alone reproduces a rolled chain but not a hand-edited one, so
     // the name says which it is rather than implying it can be recreated.
     const stamp = edited ? `${result.seed.toString(36)}-edit` : result.seed.toString(36)
-    const cut = target === 'mangled' && activeRegion ? '-cut' : ''
+    const cut = mangledRegion ? '-cut' : ''
     return `${baseName(fileName)}-mangled-${stamp}${cut}`
-  }, [result, fileName, edited, target, activeRegion])
+  }, [result, fileName, edited, mangledRegion])
 
   const exportWav = useCallback(() => {
     const pcm = outputPcm()
@@ -695,10 +746,17 @@ export function App() {
                 }
                 active={playing && target === 'source'}
                 onSeek={(p) => void seekTo('source', p)}
-                region={target === 'source' ? activeRegion : null}
+                region={sourceRegion}
                 onRegionChange={(r) => changeRegion('source', r)}
                 tools={
-                  <LoopToggle on={loop} onToggle={toggleLoop} label="source" />
+                  <>
+                    <LoopToggle on={loop} onToggle={toggleLoop} label="source" />
+                    {sourceRegion ? (
+                      <span className="wave__tag">
+                        mangling {regionSeconds(sourceRegion, durationOf(source)).toFixed(2)}s
+                      </span>
+                    ) : null}
+                  </>
                 }
               />
               <Waveform
@@ -719,7 +777,7 @@ export function App() {
                 placeholder="hit mangle"
                 nonce={result?.seed ?? 0}
                 onSeek={result ? (p) => void seekTo('mangled', p) : undefined}
-                region={target === 'mangled' ? activeRegion : null}
+                region={mangledRegion}
                 onRegionChange={
                   result ? (r) => changeRegion('mangled', r) : undefined
                 }
@@ -753,6 +811,12 @@ export function App() {
                   here, roll it, cut the bit you want, keep it. everything sits
                   at 120.
                 </p>
+                {stage ? (
+                  <p className="drop__stage" role="status">
+                    <span className="drop__spin" aria-hidden="true" />
+                    {stage}…
+                  </p>
+                ) : null}
                 <div className="drop__acts">
                   <button
                     type="button"
@@ -801,8 +865,8 @@ export function App() {
                 <span className="len__title">length</span>
                 <span className="len__now">
                   {result ? describeLength(durationOf(result.pcm)) : ''}
-                  {activeRegion && result
-                    ? ` · selection ${regionSeconds(activeRegion, durationOf(result.pcm)).toFixed(2)}s`
+                  {mangledRegion && result
+                    ? ` · exporting ${regionSeconds(mangledRegion, durationOf(result.pcm)).toFixed(2)}s`
                     : ''}
                 </span>
               </div>

@@ -3,3 +3,6 @@ dist
 .DS_Store
 *.local
 .fonts
+test-audio/real/
+test-audio/formats/
+test-audio/edge/

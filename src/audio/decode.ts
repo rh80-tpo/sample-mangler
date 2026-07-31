@@ -28,15 +28,20 @@ import type { Pcm } from './buffers'
  * you can use, and the heap is close to where a tab gets killed. So: refuse
  * past ten minutes, and say so plainly rather than locking up and dying.
  */
-export const MAX_SECONDS = 600
-export const WARN_SECONDS = 200
 /**
- * Checked before reading the file, from `File.size` alone. 24-bit stereo 48k
- * runs about 17MB a minute, so this is roughly twenty minutes of the heaviest
- * format anyone actually renders. The point is to refuse before pulling a
- * gigabyte into memory, not to be exact.
+ * Half an hour. The earlier ceiling of ten minutes was wrong: a full track or
+ * a set is exactly the sort of thing you pull a vocal chop out of, and
+ * refusing it made the tool useless for its actual job. Long sources are
+ * handled by selecting the part you want rather than by turning them away.
  */
-export const MAX_BYTES = 400 * 1024 * 1024
+export const MAX_SECONDS = 1800
+/** Past this, rolls take long enough to be worth mentioning. */
+export const WARN_SECONDS = 150
+/**
+ * Checked before reading the file, from `File.size` alone. The point is to
+ * refuse before pulling something enormous into memory, not to be exact.
+ */
+export const MAX_BYTES = 600 * 1024 * 1024
 
 export type DecodeFailure =
   | 'empty'
@@ -463,7 +468,7 @@ export function describeFailure(e: unknown): string {
       case 'too-large':
         return `${e.message}. the ceiling is ${Math.round(MAX_BYTES / 1048576)}MB, which is about twenty minutes of 24 bit stereo.`
       case 'too-long':
-        return `${e.message}. the ceiling is ${MAX_SECONDS / 60} minutes. trim it in your daw first.`
+        return `${e.message}. the ceiling is ${MAX_SECONDS / 60} minutes.`
       case 'compressed-aifc':
         return `${e.message}. render it uncompressed and try again.`
       default: {

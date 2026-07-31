@@ -172,6 +172,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Says what a source selection is going to do, next to the selection itself. */
+.wave__tag {
+  padding: 1px var(--sp-2);
+  background: var(--signal);
+  color: var(--ground);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .wave__canvas {
   position: relative;
   min-height: 0;
@@ -264,6 +276,35 @@
   max-width: 46ch;
   font-size: var(--step--1);
   color: var(--ink-dim);
+}
+
+/* Load progress. Text over a spinner, because "reading 73.6MB" answers the
+   question the spinner alone leaves open. */
+.drop__stage {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+  pointer-events: auto;
+}
+
+.drop__spin {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--signal);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 620ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .drop__acts {
