@@ -34,6 +34,7 @@ import {
   type Region,
 } from './audio/slice'
 import { describeKey, detectKey } from './audio/key'
+import { describeDetected, describeLoopTempo, detectTempo } from './audio/tempo'
 import { Library } from './components/Library'
 import { Wordmark } from './components/Wordmark'
 import { addItem, countItems, createFolder, listFolders } from './lib/library'
@@ -149,6 +150,8 @@ export function App() {
   const [keys, setKeys] = useState<{ source: string | null; mangled: string | null }>(
     { source: null, mangled: null },
   )
+  /** Estimated pulse of the source. The result's tempo is exact, not guessed. */
+  const [sourceTempo, setSourceTempo] = useState<string | null>(null)
   const [fit, setFit] = useState<FitSpec>(NO_FIT)
   // Read through a ref so the render callbacks do not have to be rebuilt (and
   // the render queue reset) every time a length control moves.
@@ -783,11 +786,16 @@ export function App() {
     const pcm = sourceRegion && source ? slicePcm(source, sourceRegion) : source
     if (!pcm) {
       setKeys((k) => ({ ...k, source: null }))
+      setSourceTempo(null)
       return
     }
     const id = setTimeout(() => {
       const found = describeKey(detectKey(pcm))
-      if (!cancelled) setKeys((k) => ({ ...k, source: found }))
+      const pulse = describeDetected(detectTempo(pcm))
+      if (!cancelled) {
+        setKeys((k) => ({ ...k, source: found }))
+        setSourceTempo(pulse)
+      }
     }, 0)
     return () => {
       cancelled = true
@@ -898,7 +906,7 @@ export function App() {
                 pcm={source}
                 tone="source"
                 label="source"
-                summary={`${summarise(source)}${keys.source ? ` · ${keys.source}` : ''}`}
+                summary={`${summarise(source)}${keys.source ? ` · ${keys.source}` : ''}${sourceTempo ? ` · ${sourceTempo}` : ''}`}
                 seconds={durationOf(source)}
                 playhead={
                   target === 'source' ? (playing ? playhead : cursor) : null
@@ -944,6 +952,11 @@ export function App() {
                   result
                     ? `${summarise(result.pcm)}${keys.mangled ? ` · ${keys.mangled}` : ''} · roll ${rollCount.current}${edited ? ' · edited' : ''}`
                     : 'not yet'
+                }
+                tempo={
+                  result
+                    ? describeLoopTempo(durationOf(result.pcm), fit.bars)
+                    : null
                 }
                 reveal={reveal}
                 seconds={result ? durationOf(result.pcm) : 0}

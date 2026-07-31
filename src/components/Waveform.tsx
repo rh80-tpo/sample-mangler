@@ -30,6 +30,8 @@ type Props = {
   onRegionChange?: (region: Region | null) => void
   /** Per-panel controls, rendered in the header row. */
   tools?: React.ReactNode
+  /** Highlighted tempo readout, for the one number people are matching to. */
+  tempo?: string | null
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
@@ -57,6 +59,7 @@ export function Waveform({
   region = null,
   onRegionChange,
   tools,
+  tempo,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   // A press is a seek until it travels far enough to be a selection instead.
@@ -311,6 +314,9 @@ export function Waveform({
       <div className="wave__head">
         <span className="wave__label">{label}</span>
         {tools}
+        {/* The tempo sits apart from the rest of the metadata: it is the one
+            number you are matching against, not another spec. */}
+        {tempo ? <span className="wave__bpm">{tempo}</span> : null}
         <span className="wave__meta">{summary}</span>
       </div>
       <div

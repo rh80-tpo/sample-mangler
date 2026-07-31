@@ -204,6 +204,20 @@
   }
 }
 
+/* The tempo the clip loops at. Carries the accent because it is the number
+   the whole exercise is aimed at. */
+.wave__bpm {
+  margin-left: auto;
+  padding: 1px var(--sp-2);
+  border: var(--edge) solid var(--signal);
+  color: var(--signal);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Says what a source selection is going to do, next to the selection itself. */
 .wave__tag {
   padding: 1px var(--sp-2);

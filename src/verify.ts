@@ -17,6 +17,7 @@ import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
 import { DecodeError, decodeAudio } from './audio/decode'
 import { detectKey } from './audio/key'
+import { describeLoopTempo, detectTempo, loopTempos } from './audio/tempo'
 
 const out = document.getElementById('out') as HTMLPreElement
 const lines: string[] = []
@@ -165,6 +166,83 @@ async function run() {
       identical === 0,
       `${identical} identical pairs of 15, worst-case corr ${maxPairCorr.toFixed(4)}`,
     )
+    log()
+  }
+
+  // --- tempo ------------------------------------------------------------
+  // Two separate claims. The loop tempo is exact arithmetic and must be right
+  // every time. The detected pulse is an estimate and is allowed to miss the
+  // octave occasionally, which is why the interface offers the alternative.
+  {
+    log('=== tempo ===')
+    log()
+    const sr = ctx.sampleRate
+    const click = (bpm: number, secs = 8): Pcm => {
+      const n = sr * secs
+      const l = new Float32Array(n)
+      const r = new Float32Array(n)
+      const beat = ((60 / bpm) * sr) / 2
+      for (let b = 0; b * beat < n; b++) {
+        const at = Math.floor(b * beat)
+        const onBeat = b % 2 === 0
+        const len = Math.floor((onBeat ? 0.18 : 0.04) * sr)
+        let ph = 0
+        for (let i = 0; i < len && at + i < n; i++) {
+          const t = i / sr
+          let v: number
+          if (onBeat) {
+            const f = 45 + 90 * Math.exp(-t * 40)
+            ph += (2 * Math.PI * f) / sr
+            v = Math.sin(ph) * Math.exp(-t * 14)
+          } else {
+            v = (Math.random() * 2 - 1) * Math.exp(-t * 70) * 0.35
+          }
+          l[at + i] += v
+          r[at + i] += v
+        }
+      }
+      return { channels: [l, r], sampleRate: sr }
+    }
+
+    const tempos = [80, 90, 100, 110, 120, 128, 135, 140, 150, 160, 174]
+    let hit = 0
+    const misses: string[] = []
+    for (const bpm of tempos) {
+      const got = detectTempo(click(bpm))
+      if (got && Math.abs(got.bpm - bpm) < 3) hit++
+      else misses.push(`${bpm}→${got ? got.bpm : 'none'}`)
+    }
+    log(`  detected ${hit}/${tempos.length}${misses.length ? `   missed ${misses.join(' ')}` : ''}`)
+    // Ten of eleven is where the swept prior landed; the remaining miss is a
+    // half-time reading, which the interface shows as an alternative.
+    check('pulse detection holds up', hit >= 10, `${hit}/${tempos.length}`)
+
+    for (const bpm of tempos) {
+      const got = detectTempo(click(bpm))
+      if (!got || Math.abs(got.bpm - bpm) < 3) continue
+      check(
+        `${bpm} offers the right alternative`,
+        got.alternates.some((a) => Math.abs(a - bpm) < 4),
+        `read ${got.bpm}, alternates ${got.alternates.join('/')}`,
+      )
+    }
+
+    // Exact loop arithmetic: a clip of N bars at 120 must report 120 and N.
+    for (const bars of [0.5, 1, 2, 4]) {
+      const seconds = bars * 2
+      check(
+        `${bars} bars reports 120`,
+        describeLoopTempo(seconds, bars) === `120 bpm · ${bars} ${bars === 1 ? 'bar' : 'bars'}`,
+        describeLoopTempo(seconds, bars) ?? 'null',
+      )
+      // And unfitted, the same length must solve back to the same tempo.
+      const solved = loopTempos(seconds)[0]
+      check(
+        `${bars} bars solves back to 120`,
+        Math.abs(solved.bpm - 120) < 0.05,
+        `${solved.bpm} at ${solved.bars} bars`,
+      )
+    }
     log()
   }
 
