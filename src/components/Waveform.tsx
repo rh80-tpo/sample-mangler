@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { computePeaks, type Peaks } from '../audio/peaks'
 import type { Pcm } from '../audio/buffers'
 
@@ -9,8 +9,10 @@ type Props = {
   tone: Tone
   /** 0 to 1. Below 1, columns past the head render as unresolved noise. */
   reveal?: number
-  /** 0 to 1 while playing, null when idle. */
+  /** 0 to 1 cursor position, or null when this panel is not the transport. */
   playhead?: number | null
+  /** True only while audio is actually running through this panel. */
+  active?: boolean
   label: string
   /** Text stand-in for the drawing, for anyone not looking at it. */
   summary: string
@@ -18,6 +20,10 @@ type Props = {
   placeholder?: string
   /** Varies the unresolved-column noise so each roll tears differently. */
   nonce?: number
+  /** Seconds of audio, used to speak the scrub position out loud. */
+  seconds?: number
+  /** Provide this to make the panel a seek control. 0 to 1. */
+  onSeek?: (position: number) => void
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
@@ -35,12 +41,16 @@ export function Waveform({
   tone,
   reveal = 1,
   playhead = null,
+  active = false,
   label,
   summary,
   placeholder,
   nonce = 0,
+  seconds = 0,
+  onSeek,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
+  const scrubbing = useRef(false)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const peaksRef = useRef<Peaks | null>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
@@ -111,7 +121,9 @@ export function Waveform({
 
     const n = peaks.columns
     const headIndex = reveal >= 1 ? n : Math.floor(reveal * n)
-    const playIndex = playhead == null ? n : Math.floor(playhead * n)
+    // The played/unplayed split only means anything while audio is running.
+    // Idle, the cursor is just a start marker and the whole waveform stays lit.
+    const playIndex = !active || playhead == null ? n : Math.floor(playhead * n)
     const frame = Math.floor(reveal * 1000) + nonce
 
     // Envelope. Split into played and unplayed so the playhead reads without
@@ -171,15 +183,70 @@ export function Waveform({
       ctx.fillRect(headIndex * COL, 0, 2 * dpr, H)
     }
 
-    // Playhead.
-    if (playhead != null && playhead > 0 && reveal >= 1) {
-      ctx.globalAlpha = 1
-      ctx.fillStyle = tone === 'mangled' ? v('--ink') : v('--ink')
-      ctx.fillRect(Math.floor(playIndex * COL), 0, dpr, H)
+    // Cursor. Solid while playing, a thinner marker when parked.
+    if (playhead != null && reveal >= 1) {
+      const x = Math.floor(playhead * n) * COL
+      ctx.globalAlpha = active ? 1 : 0.6
+      ctx.fillStyle = active ? v('--ink') : v('--signal')
+      ctx.fillRect(x, 0, (active ? 1 : 2) * dpr, H)
     }
 
     ctx.globalAlpha = 1
-  }, [size, pcm, tone, reveal, playhead, nonce])
+  }, [size, pcm, tone, reveal, playhead, active, nonce])
+
+  // --- scrubbing -----------------------------------------------------
+  const seekToClientX = useCallback(
+    (clientX: number) => {
+      const el = wrapRef.current
+      if (!el || !onSeek) return
+      const box = el.getBoundingClientRect()
+      onSeek(Math.max(0, Math.min(1, (clientX - box.left) / box.width)))
+    },
+    [onSeek],
+  )
+
+  const at = playhead ?? 0
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!onSeek) return
+      const step = e.shiftKey ? 0.01 : 0.02
+      let next: number | null = null
+      switch (e.key) {
+        case 'ArrowRight':
+          next = at + step
+          break
+        case 'ArrowLeft':
+          next = at - step
+          break
+        case 'PageUp':
+          next = at + 0.1
+          break
+        case 'PageDown':
+          next = at - 0.1
+          break
+        case 'Home':
+          next = 0
+          break
+        case 'End':
+          next = 0.98
+          break
+        case 'Enter':
+        case ' ':
+          next = at
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+      e.stopPropagation()
+      onSeek(Math.max(0, Math.min(1, next)))
+    },
+    [at, onSeek],
+  )
+
+  const interactive = Boolean(onSeek && pcm)
+  const spokenAt = seconds ? `${(at * seconds).toFixed(2)} of ${seconds.toFixed(2)} seconds` : ''
 
   return (
     <div className={`wave wave--${tone}`}>
@@ -187,14 +254,44 @@ export function Waveform({
         <span className="wave__label">{label}</span>
         <span className="wave__meta">{summary}</span>
       </div>
-      <div className="wave__canvas" ref={wrapRef}>
-        {/* The canvas carries real information, so it is labelled rather than
-            hidden. The duration, channel count and rate in `summary` are the
-            accessible equivalent of the drawing. */}
+      <div
+        className={`wave__canvas${interactive ? ' wave__canvas--seek' : ''}`}
+        ref={wrapRef}
+        // As a seek control it is a slider, not an image, so the position is
+        // readable and movable without a pointer. Arrows step, page keys jump,
+        // home and end go to the ends, enter plays from where you are.
+        {...(interactive
+          ? {
+              role: 'slider' as const,
+              tabIndex: 0,
+              'aria-label': `${label} waveform, ${summary}. Playback position.`,
+              'aria-valuemin': 0,
+              'aria-valuemax': 100,
+              'aria-valuenow': Math.round(at * 100),
+              'aria-valuetext': spokenAt,
+              onKeyDown,
+              onPointerDown: (e: React.PointerEvent) => {
+                scrubbing.current = true
+                ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+                seekToClientX(e.clientX)
+              },
+              onPointerMove: (e: React.PointerEvent) => {
+                if (scrubbing.current) seekToClientX(e.clientX)
+              },
+              onPointerUp: () => {
+                scrubbing.current = false
+              },
+              onPointerCancel: () => {
+                scrubbing.current = false
+              },
+            }
+          : {})}
+      >
         <canvas
           ref={canvasRef}
-          role="img"
-          aria-label={`${label} waveform. ${summary}.`}
+          {...(interactive
+            ? { 'aria-hidden': true as const }
+            : { role: 'img' as const, 'aria-label': `${label} waveform. ${summary}.` })}
         />
         {!pcm && placeholder ? (
           <span className="wave__placeholder">{placeholder}</span>

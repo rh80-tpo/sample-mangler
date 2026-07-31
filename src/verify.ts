@@ -14,6 +14,7 @@ import { durationOf, peakOf, pcmFrom, rmsOf, type Pcm } from './audio/buffers'
 import { renderChain } from './audio/render'
 import { encodeWav, QUANTISATION_STEP } from './audio/wav'
 import { freshSeed } from './audio/rng'
+import { GENERATORS, generateSample } from './audio/generate'
 
 const out = document.getElementById('out') as HTMLPreElement
 const lines: string[] = []
@@ -163,6 +164,57 @@ async function run() {
       `${identical} identical pairs of 15, worst-case corr ${maxPairCorr.toFixed(4)}`,
     )
     log()
+  }
+
+  // --- the built-in generators -----------------------------------------
+  // Each one has to make real audio, twice in a row without repeating itself,
+  // and survive being mangled afterwards.
+  {
+    log('=== built-in sample generators ===')
+    log()
+    for (const g of GENERATORS) {
+      const a = generateSample(g.id, ctx.sampleRate, freshSeed())
+      const b = generateSample(g.id, ctx.sampleRate, freshSeed())
+      const rms = rmsOf(a)
+      const peak = peakOf(a)
+      const dur = durationOf(a)
+      const sim = similarity(a, b)
+
+      log(
+        `${g.label.padEnd(7)} ${dur.toFixed(2)}s  ${a.channels.length}ch  peak ${peak.toFixed(3)}  rms ${rms.toFixed(4)}`,
+      )
+      check(`${g.label}: audible`, rms > 0.01, `rms ${rms.toFixed(4)} > 0.01`)
+      check(`${g.label}: not clipped`, peak <= 1.0, `peak ${peak.toFixed(4)}`)
+      check(
+        `${g.label}: sane length`,
+        dur > 0.4 && dur < 12,
+        `${dur.toFixed(2)}s`,
+      )
+      check(
+        `${g.label}: two presses differ`,
+        sim < 0.99,
+        `corr ${sim.toFixed(4)}`,
+      )
+      // Finite check: a runaway filter would produce NaN and poison the export.
+      let finite = true
+      for (const ch of a.channels) {
+        for (let i = 0; i < ch.length; i++) {
+          if (!Number.isFinite(ch[i])) {
+            finite = false
+            break
+          }
+        }
+      }
+      check(`${g.label}: all samples finite`, finite, 'no NaN or Infinity')
+
+      const rolled = await renderChain(a, rollChain(freshSeed(), dur))
+      check(
+        `${g.label}: survives a mangle`,
+        rmsOf(rolled.pcm) > 0.004 && peakOf(rolled.pcm) <= 1.0,
+        `rms ${rmsOf(rolled.pcm).toFixed(4)}, peak ${peakOf(rolled.pcm).toFixed(4)}`,
+      )
+      log()
+    }
   }
 
   // --- the dials actually move the audio -------------------------------

@@ -9,6 +9,7 @@ import { renderChain } from './audio/render'
 import { Rack } from './components/Rack'
 import type { ChainSpec } from './audio/types'
 import { freshSeed } from './audio/rng'
+import { GENERATORS, generateSample, type GeneratorId } from './audio/generate'
 import { encodeWav } from './audio/wav'
 import './styles/app.css'
 
@@ -56,6 +57,14 @@ export function App() {
   const [reveal, setReveal] = useState(1)
   const [playhead, setPlayhead] = useState<number | null>(null)
   const [playing, setPlaying] = useState(false)
+  /** Which panel the transport is pointed at. Clicking a panel repoints it. */
+  const [target, setTarget] = useState<'source' | 'mangled'>('mangled')
+  /**
+   * Where playback will start from. Survives playback ending, so a seek is a
+   * position you set rather than something that evaporates the moment the
+   * sample runs out.
+   */
+  const [cursor, setCursor] = useState(0)
   const [jolt, setJolt] = useState(0)
   const [announce, setAnnounce] = useState('')
 
@@ -81,7 +90,9 @@ export function App() {
     return () => cancelAnimationFrame(raf)
   }, [playing, playback])
 
-  const current = result?.pcm ?? source
+  // What the transport is actually pointed at right now.
+  const current =
+    target === 'source' ? source : (result?.pcm ?? source)
 
   const togglePlay = useCallback(async () => {
     if (!current) return
@@ -91,9 +102,80 @@ export function App() {
       setPlayhead(null)
       return
     }
-    await playback.play(current)
+    // Picks up from the cursor, so play after a seek starts where you put it.
+    await playback.play(current, cursor)
     setPlaying(true)
-  }, [current, playback])
+  }, [current, playback, cursor])
+
+  /** Click or keyboard on a panel: point the transport there and play from it. */
+  const seekTo = useCallback(
+    async (which: 'source' | 'mangled', position: number) => {
+      const pcm = which === 'source' ? source : result?.pcm
+      if (!pcm) return
+      setTarget(which)
+      setCursor(position)
+      setPlayhead(position)
+      await playback.play(pcm, position)
+      setPlaying(true)
+    },
+    [source, result, playback],
+  )
+
+  /** Shared by file loads and generated samples. */
+  const adopt = useCallback(
+    (pcm: Pcm, name: string) => {
+      setSource(pcm)
+      setFileName(name)
+      setResult(null)
+      setChain(null)
+      setEdited(false)
+      setTarget('mangled')
+      setCursor(0)
+      rollCount.current = 0
+      setAnnounce(`Loaded ${name}, ${fmtDuration(durationOf(pcm))}.`)
+    },
+    [],
+  )
+
+  /** Clear everything and go back to the drop state. */
+  const eject = useCallback(() => {
+    playback.stop()
+    setPlaying(false)
+    setPlayhead(null)
+    setSource(null)
+    setFileName('')
+    setResult(null)
+    setChain(null)
+    setEdited(false)
+    setError('')
+    setCursor(0)
+    rollCount.current = 0
+    setAnnounce('Cleared. Ready for a new sample.')
+  }, [playback])
+
+  // --- generated source material --------------------------------------
+  const generate = useCallback(
+    async (id: GeneratorId) => {
+      setBusy(true)
+      setError('')
+      playback.stop()
+      setPlaying(false)
+      setPlayhead(null)
+      try {
+        // Yield so the pressed state paints before the synthesis blocks.
+        await new Promise((r) => setTimeout(r, 0))
+        const pcm = generateSample(id, playback.sampleRate(), freshSeed())
+        adopt(pcm, `${id}.wav`)
+      } catch (e) {
+        setError(
+          e instanceof Error ? `could not build that one. ${e.message}` : 'could not build that one.',
+        )
+      } finally {
+        setBusy(false)
+      }
+    },
+    [playback, adopt],
+  )
 
   // --- loading -------------------------------------------------------
   const loadFile = useCallback(
@@ -109,13 +191,7 @@ export function App() {
         // stays 48k instead of being quietly converted to the hardware rate.
         const decoded = await playback.decode(bytes, sniffSampleRate(bytes))
         const pcm = pcmFrom(decoded)
-        setSource(pcm)
-        setFileName(file.name)
-        setResult(null)
-        setChain(null)
-        setEdited(false)
-        rollCount.current = 0
-        setAnnounce(`Loaded ${file.name}, ${fmtDuration(durationOf(pcm))}.`)
+        adopt(pcm, file.name)
         if (peakOf(pcm) < SILENCE_FLOOR) {
           setError('that file is silent. nothing to mangle.')
         }
@@ -127,7 +203,7 @@ export function App() {
         setBusy(false)
       }
     },
-    [playback],
+    [playback, adopt],
   )
 
   // --- the reveal ----------------------------------------------------
@@ -260,6 +336,10 @@ export function App() {
       setResult({ pcm, seed })
       setChain(rolled)
       setEdited(false)
+      // A new roll is a different length, so a cursor from the last one no
+      // longer points at anything meaningful.
+      setCursor(0)
+      setTarget('mangled')
       setAnnounce(
         `Roll ${rollCount.current}. ${fmtDuration(durationOf(pcm))} of mangled audio ready.`,
       )
@@ -397,6 +477,9 @@ export function App() {
                 <span className="bar__file">{fileName}</span>
                 <span aria-hidden="true"> · </span>
                 <span>{summarise(source)}</span>
+                <button type="button" className="bar__eject" onClick={eject}>
+                  new sample
+                </button>
               </>
             ) : (
               'client side only · nothing uploads'
@@ -412,7 +495,12 @@ export function App() {
                 tone="source"
                 label="source"
                 summary={summarise(source)}
-                playhead={playing && !hasResult ? playhead : null}
+                seconds={durationOf(source)}
+                playhead={
+                  target === 'source' ? (playing ? playhead : cursor) : null
+                }
+                active={playing && target === 'source'}
+                onSeek={(p) => void seekTo('source', p)}
               />
               <Waveform
                 pcm={result?.pcm ?? null}
@@ -424,9 +512,14 @@ export function App() {
                     : 'not yet'
                 }
                 reveal={reveal}
-                playhead={playing && hasResult ? playhead : null}
+                seconds={result ? durationOf(result.pcm) : 0}
+                playhead={
+                  target === 'mangled' ? (playing ? playhead : cursor) : null
+                }
+                active={playing && target === 'mangled'}
                 placeholder="hit mangle"
                 nonce={result?.seed ?? 0}
+                onSeek={result ? (p) => void seekTo('mangled', p) : undefined}
               />
             </>
           ) : (
@@ -451,13 +544,36 @@ export function App() {
                   wav, mp3, aiff, flac. built for stems, one shots and loops
                   under 30 seconds.
                 </p>
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  onClick={() => fileInput.current?.click()}
+                <div className="drop__acts">
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    pick a file
+                  </button>
+                  <span className="drop__or">or build one</span>
+                </div>
+                {/* Stops the panel-wide click handler from opening the file
+                    picker behind a generator press. */}
+                <div
+                  className="gens"
+                  onClick={(e) => e.stopPropagation()}
+                  role="group"
+                  aria-label="Generate a sample"
                 >
-                  or pick a file
-                </button>
+                  {GENERATORS.map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className="gen"
+                      disabled={busy}
+                      onClick={() => void generate(g.id)}
+                    >
+                      {g.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}

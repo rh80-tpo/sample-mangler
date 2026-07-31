@@ -52,6 +52,20 @@
   min-height: 84px;
 }
 
+/* A seekable panel. The cursor is the affordance; the focus ring is how
+   anyone not using a pointer knows it is reachable. */
+.wave__canvas--seek {
+  cursor: text;
+}
+
+.wave__canvas--seek:hover {
+  border-color: var(--hairline-strong);
+}
+
+.app--live .wave--mangled .wave__canvas--seek:hover {
+  border-color: var(--signal);
+}
+
 /* ---------------------------------------------------------------- header */
 
 .bar {
@@ -231,6 +245,91 @@
   max-width: 46ch;
   font-size: var(--step--1);
   color: var(--ink-dim);
+}
+
+.drop__acts {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  pointer-events: auto;
+}
+
+.drop__or {
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* --------------------------------------------------------- generators */
+
+.gens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  pointer-events: auto;
+}
+
+.gen {
+  min-height: 38px;
+  padding: 0 var(--sp-4);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  background: var(--ground-raised);
+  border: var(--edge) solid var(--hairline);
+  border-radius: var(--radius);
+  transition: color var(--dur-fast) var(--ease-snap),
+    border-color var(--dur-fast) var(--ease-snap),
+    background-color var(--dur-fast) var(--ease-snap),
+    transform var(--dur-fast) var(--ease-snap);
+}
+
+.gen:hover:not(:disabled) {
+  color: var(--ground);
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+.gen:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.gen:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  .gen {
+    min-height: 44px;
+  }
+}
+
+/* --------------------------------------------------------- eject */
+
+.bar__eject {
+  margin-left: var(--sp-3);
+  padding: 0 var(--sp-2);
+  min-height: 24px;
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+  border-bottom: var(--edge) solid transparent;
+  transition: border-color var(--dur-fast) var(--ease-snap);
+}
+
+.bar__eject:hover {
+  border-bottom-color: var(--signal);
+}
+
+@media (pointer: coarse) {
+  .bar__eject {
+    min-height: 44px;
+  }
 }
 
 /* ---------------------------------------------------------------- rack */
