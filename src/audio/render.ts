@@ -7,6 +7,7 @@ import {
   durationOf,
   normalizeInPlace,
   pcmFrom,
+  peakOf,
   trimTail,
   type Pcm,
 } from './buffers'
@@ -17,6 +18,7 @@ import {
   compensationSemitones,
   resampleTo,
   trimTo,
+  trimToLoudest,
   type FitSpec,
 } from './fit'
 import type { ChainSpec, EffectSpec, Op } from './types'
@@ -29,7 +31,7 @@ import type { ChainSpec, EffectSpec, Op } from './types'
  * There is nothing to compensate for at the head; there is a tail to catch at
  * the end. trimTail cleans up whatever slack is left over.
  */
-function tailFor(ops: Op[]): number {
+function tailFor(ops: Op[], sourceSeconds: number): number {
   let tail = 0.05
   for (const op of ops) {
     if (op.spec.id === 'pitch') {
@@ -38,11 +40,16 @@ function tailFor(ops: Op[]): number {
     if (op.spec.id === 'reverb') {
       // Freeverb has no explicit decay time, so the tail is estimated from
       // room size. Cutting a reverb off mid-decay is the most obvious render
-      // artefact there is, and trimTail removes whatever slack is left.
+      // artefact there is.
       tail = Math.max(tail, 0.6 + op.spec.size * 5)
     }
   }
-  return tail
+  // Capped against the source. Left uncapped, a big room turns a two second
+  // sample into a seven second buffer that is mostly decay, and any structural
+  // effect after it (reverse especially) then treats that decay as the
+  // material. Trimming to a bar length after a reverse would hand back the
+  // quiet end of the tail, which is how this produced silence.
+  return Math.min(tail, sourceSeconds * 1.2 + 0.35)
 }
 
 function makeNode(spec: EffectSpec): Tone.ToneAudioNode {
@@ -95,7 +102,7 @@ function makeNode(spec: EffectSpec): Tone.ToneAudioNode {
  */
 async function renderNodePass(pcm: Pcm, ops: Op[]): Promise<Pcm> {
   const channels = pcm.channels.length
-  const duration = durationOf(pcm) + tailFor(ops)
+  const duration = durationOf(pcm) + tailFor(ops, durationOf(pcm))
 
   const offline = new Tone.OfflineContext(channels, duration, pcm.sampleRate)
   const previous = Tone.getContext()
@@ -192,6 +199,10 @@ export async function renderChain(
       opIndex += 1
     } else {
       pcm = await renderNodePass(pcm, pass.ops)
+      // Drop the dead air a pass leaves behind before the next stage sees it.
+      // Otherwise a decay tail becomes structural material for whatever chops
+      // or reverses next.
+      pcm = trimTail(pcm)
       opIndex += pass.ops.length
     }
     owned = true
@@ -210,7 +221,15 @@ export async function renderChain(
     const target = fit.bars * SECONDS_PER_BAR
     const before = durationOf(pcm)
     if (fit.mode === 'trim') {
-      pcm = trimTo(pcm, target)
+      const untrimmed = pcm
+      const hadSignal = peakOf(untrimmed) >= 1e-4
+      const head = trimTo(untrimmed, target)
+      // If cutting from the head landed on dead air, take the loudest window
+      // of the same length out of the original instead of handing back silence.
+      pcm =
+        hadSignal && peakOf(head) < 1e-4
+          ? trimToLoudest(untrimmed, target)
+          : head
     } else {
       pcm = resampleTo(pcm, target)
       if (fit.mode === 'fit') {

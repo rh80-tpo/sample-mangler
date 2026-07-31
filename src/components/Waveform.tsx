@@ -330,8 +330,15 @@ export function Waveform({
               'aria-valuetext': spokenAt,
               onKeyDown,
               onPointerDown: (e: React.PointerEvent) => {
-                ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+                // State first. Pointer capture is an optimisation, and it
+                // throws if the pointer is already gone, so it must not be
+                // able to stop the drag from starting.
                 drag.current = { from: fractionAt(e.clientX), moved: false }
+                try {
+                  ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+                } catch {
+                  // Capture unavailable. The window listeners still finish it.
+                }
               },
               onPointerMove: (e: React.PointerEvent) => {
                 const d = drag.current

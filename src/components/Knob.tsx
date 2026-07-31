@@ -123,8 +123,14 @@ export function Knob({ param, value, disabled, onChange, onCommit }: Props) {
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (disabled) return
-      ;(e.target as Element).setPointerCapture?.(e.pointerId)
+      // State first: setPointerCapture throws if the pointer is already gone,
+      // and that must not be able to stop the drag from starting.
       drag.current = { y: e.clientY, start: toNorm(value, param) }
+      try {
+        ;(e.target as Element).setPointerCapture?.(e.pointerId)
+      } catch {
+        // Capture unavailable. The window listeners still end the drag.
+      }
       ref.current?.focus()
       e.preventDefault()
     },

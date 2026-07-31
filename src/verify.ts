@@ -166,6 +166,38 @@ async function run() {
     log()
   }
 
+  // --- bar-fitted rolls are never silent --------------------------------
+  // A reverb renders with a long decay tail, and that tail becomes real buffer
+  // length. Put a reverse after it and the quiet end moves to the front, so
+  // trimming to a bar handed back silence. This is the regression guard.
+  {
+    log('=== bar-fitted rolls stay audible ===')
+    log()
+    let silent = 0
+    let quietest = 1
+    const ROUNDS = 40
+    for (const gen of ['vocal', 'choir', 'keys'] as const) {
+      const src = generateSample(gen, ctx.sampleRate, freshSeed())
+      for (let i = 0; i < ROUNDS; i++) {
+        const bars = [0.5, 1, 2][i % 3]
+        const chain = rollChain(freshSeed(), durationOf(src))
+        const { pcm } = await renderChain(src, chain, { bars, mode: 'trim' })
+        const r = rmsOf(pcm)
+        quietest = Math.min(quietest, r)
+        if (r < 0.004) {
+          silent++
+          log(`  <span class="bad">silent:</span> ${describeChain(chain)}`)
+        }
+      }
+    }
+    check(
+      'no bar-fitted roll comes back silent',
+      silent === 0,
+      `${silent} of ${ROUNDS * 3}, quietest rms ${quietest.toFixed(5)}`,
+    )
+    log()
+  }
+
   // --- loops actually loop ----------------------------------------------
   // A bar-length result exists to be played round and round. That means two
   // things must hold: the length is exactly the bar count asked for, and the

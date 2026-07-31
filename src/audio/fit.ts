@@ -86,6 +86,43 @@ export function trimTo(pcm: Pcm, seconds: number): Pcm {
 }
 
 /**
+ * Cut a window of `seconds` starting wherever the material is loudest.
+ *
+ * The fallback for when trimming from the head would land on dead air, which
+ * happens after a reverse puts a decay tail at the front. Taking the head
+ * blindly would hand back silence; this hands back the part worth keeping.
+ */
+export function trimToLoudest(pcm: Pcm, seconds: number): Pcm {
+  const want = Math.max(1, Math.round(seconds * pcm.sampleRate))
+  const total = pcm.channels[0].length
+  if (want >= total) return trimTo(pcm, seconds)
+
+  // Coarse energy scan: 64 windows is plenty to find the interesting region
+  // and avoids walking millions of samples per candidate offset.
+  const STEPS = 64
+  const stride = Math.max(1, Math.floor((total - want) / STEPS))
+  let bestAt = 0
+  let bestEnergy = -1
+  for (let at = 0; at + want <= total; at += stride) {
+    let energy = 0
+    // Sample sparsely inside the window; we are ranking, not measuring.
+    const step = Math.max(1, Math.floor(want / 2000))
+    for (const ch of pcm.channels) {
+      for (let i = at; i < at + want; i += step) energy += ch[i] * ch[i]
+    }
+    if (energy > bestEnergy) {
+      bestEnergy = energy
+      bestAt = at
+    }
+  }
+
+  return {
+    sampleRate: pcm.sampleRate,
+    channels: pcm.channels.map((ch) => ch.slice(bestAt, bestAt + want)),
+  }
+}
+
+/**
  * Resample to an exact length. Duration and pitch both move together, which is
  * what a hardware sampler does when you change the playback rate.
  *
