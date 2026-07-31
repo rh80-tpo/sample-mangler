@@ -4,6 +4,7 @@ import { Waveform } from './components/Waveform'
 import { Playback } from './audio/playback'
 import { durationOf, peakOf, pcmFrom, type Pcm } from './audio/buffers'
 import { sniffSampleRate } from './audio/sniff'
+import { decodeAudio, describeFailure } from './audio/decode'
 import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
 import { Rack } from './components/Rack'
@@ -39,7 +40,13 @@ type RenderQueue = {
   pending: ChainSpec | null
 }
 
-const ACCEPT = 'audio/*,.wav,.mp3,.aiff,.aif,.flac,.ogg,.m4a'
+/**
+ * Deliberately wide. A narrow accept list makes macOS grey the file out in the
+ * open dialog, and a file you cannot even select gives you nothing to go on.
+ * Better to take anything and say precisely why if it will not decode.
+ */
+const ACCEPT =
+  'audio/*,.wav,.wave,.aif,.aiff,.aifc,.caf,.mp3,.flac,.m4a,.mp4,.aac,.ogg,.oga,.opus,.webm,.au,.snd'
 
 /** Below this peak there is nothing to hear, so say so instead of pretending. */
 const SILENCE_FLOOR = 1e-4
@@ -290,16 +297,18 @@ export function App() {
         const bytes = await file.arrayBuffer()
         // Decode at the file's own rate when it declares one, so a 48k stem
         // stays 48k instead of being quietly converted to the hardware rate.
-        const decoded = await playback.decode(bytes, sniffSampleRate(bytes))
-        const pcm = pcmFrom(decoded)
+        const rate = sniffSampleRate(bytes)
+        const pcm = await decodeAudio(bytes, (b) => playback.decode(b, rate))
         adopt(pcm, file.name)
         if (peakOf(pcm) < SILENCE_FLOOR) {
           setError('that file is silent. nothing to mangle.')
         }
-      } catch {
+      } catch (e) {
         setSource(null)
         setResult(null)
-        setError('could not read that one. try a wav, mp3, aiff, or flac.')
+        // Say what actually went wrong. "Unsupported" and "empty" and
+        // "compressed" are different problems with different fixes.
+        setError(describeFailure(e))
       } finally {
         setBusy(false)
       }
@@ -622,9 +631,9 @@ export function App() {
       <div className="app__shake" ref={shakeRef}>
         <header className="bar">
           <h1 className="mark" ref={markRef}>
-            <span className="sr-only">HAZEN sampler mangler</span>
+            <span className="sr-only">HAZEN sample mangler</span>
             <Wordmark />
-            <span aria-hidden="true">sampler mangler</span>
+            <span aria-hidden="true">sample mangler</span>
           </h1>
           <p className="bar__meta">
             {fileName ? (

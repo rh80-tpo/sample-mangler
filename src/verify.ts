@@ -15,6 +15,7 @@ import { renderChain } from './audio/render'
 import { encodeWav, QUANTISATION_STEP } from './audio/wav'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
+import { DecodeError, decodeAudio } from './audio/decode'
 
 const out = document.getElementById('out') as HTMLPreElement
 const lines: string[] = []
@@ -163,6 +164,71 @@ async function run() {
       identical === 0,
       `${identical} identical pairs of 15, worst-case corr ${maxPairCorr.toFixed(4)}`,
     )
+    log()
+  }
+
+  // --- file formats -----------------------------------------------------
+  // Chromium's decodeAudioData cannot read AIFF or CAF, which is exactly what
+  // a Mac DAW renders. Those go through our own parser, so this checks both
+  // that they load and that they decode to the same audio as the wav.
+  {
+    log('=== file formats ===')
+    log()
+    const native = (b: ArrayBuffer) => ctx.decodeAudioData(b)
+    const load = async (name: string) => {
+      const res = await fetch(`/test-audio/formats/${name}`)
+      return decodeAudio(await res.arrayBuffer(), native)
+    }
+
+    try {
+      const ref = await load('a-wav16.wav')
+      for (const name of [
+        'a-wav24.wav',
+        'a-wav32f.wav',
+        'a-mono.wav',
+        'b-aiff.aiff',
+        'b-aif.aif',
+        'b-aifc-sowt.aifc',
+        'c-mp3.mp3',
+        'd-flac.flac',
+        'e-m4a.m4a',
+        'h-caf.caf',
+        'i-UPPER.WAV',
+      ]) {
+        const pcm = await load(name)
+        const sec = durationOf(pcm)
+        check(
+          `${name} loads`,
+          pcm.channels[0].length > 0 && rmsOf(pcm) > 0.001,
+          `${sec.toFixed(2)}s ${pcm.channels.length}ch ${(pcm.sampleRate / 1000).toFixed(1)}k`,
+        )
+        // The uncompressed stereo formats must be sample-accurate against the
+        // wav. Lossy ones only have to be recognisably the same audio, and the
+        // mono fixture is a downmix, so its one channel is (L+R)/2 rather than
+        // L and comparing it here would be comparing different audio.
+        if (/aif|caf|wav/i.test(name) && pcm.channels.length === ref.channels.length) {
+          const sim = similarity(ref, pcm)
+          check(
+            `${name} matches the wav`,
+            sim > 0.999,
+            `correlation ${sim.toFixed(6)}`,
+          )
+        }
+      }
+
+      let emptyReason = ''
+      try {
+        await decodeAudio(new ArrayBuffer(0), native)
+      } catch (e) {
+        emptyReason = e instanceof DecodeError ? e.reason : 'other'
+      }
+      check('empty file is reported as empty', emptyReason === 'empty', emptyReason)
+    } catch (e) {
+      log(
+        `  <span class="bad">could not run: ${e instanceof Error ? e.message : String(e)}</span>`,
+      )
+      log('  (fixtures come from the ffmpeg battery in test-audio/formats)')
+    }
     log()
   }
 

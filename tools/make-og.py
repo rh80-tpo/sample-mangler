@@ -162,7 +162,7 @@ def build_og(wav_path):
                 fill=SIGNAL,
             )
         x += 78 * scale
-    d.text((x + 14, 78), "sampler mangler", font=mark, fill=INK)
+    d.text((x + 14, 78), "sample mangler", font=mark, fill=INK)
 
     # Standfirst.
     sub = load_font("martian-400.ttf", 19)
