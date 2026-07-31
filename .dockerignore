@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.fonts
+test-audio
+verify.html
+src/verify.ts
+tools
+*.md
+.DS_Store
+.claude

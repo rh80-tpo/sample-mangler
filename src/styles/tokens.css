@@ -1,0 +1,75 @@
+/*
+ * Design tokens. One source of truth for colour, type, space and motion.
+ * Every component reads from here. Nothing hardcodes a hex value.
+ *
+ * Contrast, measured against --ground (#0B0B0D):
+ *   --ink        15.98:1   AAA
+ *   --ink-dim     6.54:1   AA
+ *   --ink-faint   4.95:1   AA
+ *   --signal      5.51:1   AA
+ * --hairline and --grid are non-text only and are exempt.
+ */
+
+:root {
+  /* --- ground ------------------------------------------------------ */
+  --ground: #0b0b0d;
+  --ground-raised: #131317;
+  --ground-sunken: #070709;
+
+  /* --- ink --------------------------------------------------------- */
+  --ink: #ede7dc;
+  --ink-dim: #9a948b;
+  --ink-faint: #857f75;
+
+  /* --- signal ------------------------------------------------------
+   * One accent. It appears only once something has been mangled, so
+   * colour reads as a consequence of an action rather than decoration.  */
+  --signal: #ff3b12;
+  --signal-deep: #c22a0c;
+  --signal-wash: rgba(255, 59, 18, 0.12);
+  --signal-glow: rgba(255, 59, 18, 0.32);
+
+  /* --- non-text lines ---------------------------------------------- */
+  --hairline: rgba(237, 231, 220, 0.13);
+  --hairline-strong: rgba(237, 231, 220, 0.26);
+  --grid: rgba(237, 231, 220, 0.06);
+
+  /* --- type -------------------------------------------------------- */
+  --face-display: 'Anybody Variable', 'Anybody', system-ui, sans-serif;
+  --face-mono: 'Martian Mono', ui-monospace, monospace;
+
+  --step--2: clamp(0.62rem, 0.6rem + 0.1vw, 0.68rem);
+  --step--1: clamp(0.72rem, 0.69rem + 0.14vw, 0.8rem);
+  --step-0: clamp(0.86rem, 0.82rem + 0.2vw, 0.96rem);
+  --step-1: clamp(1.1rem, 1rem + 0.5vw, 1.4rem);
+  --step-2: clamp(1.6rem, 1.3rem + 1.5vw, 2.6rem);
+  --step-3: clamp(2.4rem, 1.6rem + 4vw, 5.2rem);
+
+  --tracking-mono: 0.16em;
+  --tracking-tight: -0.03em;
+
+  /* --- space ------------------------------------------------------- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-7: 3rem;
+  --sp-8: 4.5rem;
+
+  /* --- shadow (soft only, never stacked) --------------------------- */
+  --shadow-lift: 0 1px 0 rgba(237, 231, 220, 0.07);
+  --shadow-drop: 0 18px 40px -24px rgba(0, 0, 0, 0.9);
+
+  /* --- motion ------------------------------------------------------ */
+  --ease-snap: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-slam: cubic-bezier(0.7, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-mid: 260ms;
+  --dur-slow: 520ms;
+
+  /* --- geometry ---------------------------------------------------- */
+  --radius: 2px;
+  --edge: 1px;
+}

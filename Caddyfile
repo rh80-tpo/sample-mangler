@@ -1,0 +1,16 @@
+:8080 {
+	root * /srv
+	encode zstd gzip
+
+	# Hashed build assets never change under the same name.
+	@immutable path /assets/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# The shell itself must always revalidate.
+	@shell path /index.html /
+	header @shell Cache-Control "no-cache"
+
+	# SPA fallback: unmatched routes serve the shell.
+	try_files {path} /index.html
+	file_server
+}

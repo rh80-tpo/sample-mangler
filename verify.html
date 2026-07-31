@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sample Mangler — render/export verification</title>
+    <style>
+      body {
+        background: #0b0b0d;
+        color: #e8e2d9;
+        font: 13px/1.6 ui-monospace, monospace;
+        padding: 24px;
+        margin: 0;
+      }
+      pre { white-space: pre-wrap; margin: 0; }
+      .ok { color: #6ee7a0; }
+      .bad { color: #ff5a3c; }
+      button {
+        font: inherit; background: #ff3b12; color: #0b0b0d; border: 0;
+        padding: 10px 20px; cursor: pointer; margin-bottom: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="run">run verification</button>
+    <pre id="out">idle</pre>
+    <script type="module" src="/src/verify.ts"></script>
+  </body>
+</html>

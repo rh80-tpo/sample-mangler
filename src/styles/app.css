@@ -1,0 +1,324 @@
+/* ---------------------------------------------------------------- shell */
+
+.app {
+  height: 100%;
+  padding: clamp(var(--sp-4), 2.4vw, var(--sp-6));
+  position: relative;
+  isolation: isolate;
+}
+
+/* A faint fixed rule grid. Reads as bench equipment rather than decoration,
+   and it is the only ornament on the page. */
+.app::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--grid) 0 1px,
+    transparent 1px 88px
+  );
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.app__shake {
+  height: 100%;
+  max-width: 1500px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(var(--sp-4), 2.2vh, var(--sp-6));
+  will-change: transform;
+}
+
+/* ---------------------------------------------------------------- header */
+
+.bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  border-bottom: var(--edge) solid var(--hairline);
+  padding-bottom: var(--sp-3);
+}
+
+.mark {
+  margin: 0;
+  font-family: var(--face-display);
+  font-variation-settings: 'wdth' 100, 'wght' 800;
+  font-size: var(--step-1);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1;
+  color: var(--ink);
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.bar__meta {
+  margin: 0;
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.bar__file {
+  color: var(--ink-dim);
+}
+
+/* ---------------------------------------------------------------- stage */
+
+.stage {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: clamp(var(--sp-3), 1.8vh, var(--sp-5));
+}
+
+/* With nothing loaded there is only one thing to show, so it takes the room
+   both panels would have had rather than leaving a hole under itself. */
+.stage--empty {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* --------------------------------------------------------------- waveform */
+
+.wave {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+
+.wave__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+}
+
+.wave__label {
+  color: var(--ink-faint);
+}
+
+.wave--mangled .wave__label {
+  color: var(--ink-dim);
+}
+
+.app--live .wave--mangled .wave__label {
+  color: var(--signal);
+}
+
+.wave__meta {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.wave__canvas {
+  position: relative;
+  min-height: 0;
+  background: var(--ground-sunken);
+  border: var(--edge) solid var(--hairline);
+  box-shadow: var(--shadow-lift);
+  overflow: hidden;
+}
+
+.wave--mangled .wave__canvas {
+  transition: border-color var(--dur-mid) var(--ease-snap),
+    background-color var(--dur-mid) var(--ease-snap);
+}
+
+.app--live .wave--mangled .wave__canvas {
+  border-color: color-mix(in srgb, var(--signal) 42%, transparent);
+  background: color-mix(in srgb, var(--signal) 5%, var(--ground-sunken));
+}
+
+.wave__canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.wave__placeholder {
+  position: absolute;
+  inset: auto auto var(--sp-3) var(--sp-4);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- drop */
+
+.drop {
+  position: relative;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Sits inside the scope, bottom left, over the dormant baseline. No dashed
+   rectangle: the panel border is already the edge of the target. */
+.drop__inner {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: clamp(var(--sp-4), 4vh, var(--sp-7));
+  pointer-events: none;
+}
+
+.drop__inner > .btn {
+  pointer-events: auto;
+}
+
+.app--dragging .wave__canvas {
+  border-color: var(--signal);
+  background: var(--signal-wash);
+}
+
+.drop__head {
+  margin: 0;
+  font-family: var(--face-display);
+  font-variation-settings: 'wdth' 92, 'wght' 800;
+  font-size: var(--step-3);
+  line-height: 0.9;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink);
+}
+
+.drop__sub {
+  margin: 0;
+  max-width: 46ch;
+  font-size: var(--step--1);
+  color: var(--ink-dim);
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.controls {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) minmax(0, 4fr) minmax(7rem, 1fr);
+  gap: clamp(var(--sp-2), 1vw, var(--sp-4));
+  align-items: stretch;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  font-family: var(--face-mono);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  border-radius: var(--radius);
+  transition: color var(--dur-fast) var(--ease-snap),
+    background-color var(--dur-fast) var(--ease-snap),
+    border-color var(--dur-fast) var(--ease-snap),
+    transform var(--dur-fast) var(--ease-snap);
+}
+
+.btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+.btn--ghost {
+  padding: var(--sp-4) var(--sp-3);
+  color: var(--ink-dim);
+  border: var(--edge) solid var(--hairline);
+  background: var(--ground-raised);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--hairline-strong);
+}
+
+.btn--ghost:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* The slab. The one thing on the page that is meant to be hit. */
+.btn--slab {
+  position: relative;
+  padding: clamp(var(--sp-4), 2.4vh, var(--sp-6)) var(--sp-4);
+  background: var(--signal);
+  color: var(--ground);
+  border: var(--edge) solid var(--signal);
+  box-shadow: var(--shadow-drop);
+  overflow: hidden;
+}
+
+.btn__slabtext {
+  font-family: var(--face-display);
+  font-variation-settings: 'wdth' 78, 'wght' 900;
+  font-size: var(--step-2);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  transition: font-variation-settings var(--dur-mid) var(--ease-snap);
+}
+
+.btn--slab:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--signal) 88%, var(--ink));
+}
+
+.btn--slab:hover:not(:disabled) .btn__slabtext {
+  font-variation-settings: 'wdth' 108, 'wght' 900;
+}
+
+/* Drops on press. Weight, then release. */
+.btn--slab:active:not(:disabled) {
+  transform: translateY(3px);
+  background: var(--signal-deep);
+  box-shadow: none;
+}
+
+.btn--slab:disabled {
+  background: var(--ground-raised);
+  border-color: var(--hairline);
+  color: var(--ink-faint);
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------------- notice */
+
+.notice {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: var(--edge) solid color-mix(in srgb, var(--signal) 55%, transparent);
+  background: var(--signal-wash);
+  color: var(--ink);
+  font-size: var(--step--1);
+}
+
+/* ---------------------------------------------------------------- small */
+
+@media (max-width: 720px) {
+  .controls {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas: 'slab slab' 'play wav';
+  }
+  .btn--slab {
+    grid-area: slab;
+  }
+  .controls .btn--ghost:first-of-type {
+    grid-area: play;
+  }
+  .controls .btn--ghost:last-of-type {
+    grid-area: wav;
+  }
+  .bar {
+    align-items: flex-start;
+  }
+}
