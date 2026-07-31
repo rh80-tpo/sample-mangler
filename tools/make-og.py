@@ -23,6 +23,27 @@ GRID = (25, 24, 26)
 
 W, H = 1200, 630
 
+# ΗΛΖΞΝ, the same outlines as src/components/Wordmark.tsx, on a 62x100 box.
+GLYPH_POLYS = [
+    # Eta
+    [[(0, 0), (18, 0), (18, 41), (44, 41), (44, 0), (62, 0),
+      (62, 100), (44, 100), (44, 59), (18, 59), (18, 100), (0, 100)]],
+    # Lambda
+    [[(22, 0), (40, 0), (62, 100), (44, 100), (31, 42), (18, 100), (0, 100)]],
+    # Zeta
+    [[(0, 0), (62, 0), (62, 18), (28, 82), (62, 82), (62, 100),
+      (0, 100), (0, 82), (34, 18), (0, 18)]],
+    # Xi, three bars
+    [
+        [(0, 0), (62, 0), (62, 18), (0, 18)],
+        [(8, 41), (54, 41), (54, 59), (8, 59)],
+        [(0, 82), (62, 82), (62, 100), (0, 100)],
+    ],
+    # Nu
+    [[(0, 100), (0, 0), (18, 0), (44, 62), (44, 0), (62, 0),
+      (62, 100), (44, 100), (18, 38), (18, 100)]],
+]
+
 
 def read_wav(path):
     """Minimal 24/16-bit PCM WAV reader. Returns mono floats."""
@@ -126,23 +147,37 @@ def build_og(wav_path):
     # Baseline through the middle.
     d.line([(80, mid), (W - 80, mid)], fill=(60, 26, 20), width=1)
 
-    # Wordmark.
-    mark = load_font("anybody.ttf", 74, axes=[100, 800])
-    d.text((78, 74), "sample mangler", font=mark, fill=INK)
+    # Wordmark. The owner mark is drawn from the same glyph outlines the site
+    # uses, because Anybody has no Greek subset and typing the real codepoints
+    # would fall back to whatever the renderer had lying around.
+    mark = load_font("anybody.ttf", 68, axes=[100, 800])
+    glyph_h = 46
+    scale = glyph_h / 100
+    x = 78
+    y = 84
+    for poly in GLYPH_POLYS:
+        for shape in poly:
+            d.polygon(
+                [(x + px * scale, y + py * scale) for px, py in shape],
+                fill=SIGNAL,
+            )
+        x += 78 * scale
+    d.text((x + 14, 78), "sampler mangler", font=mark, fill=INK)
 
     # Standfirst.
     sub = load_font("martian-400.ttf", 19)
     tracked_text(
-        d, (82, 168), "DROP A SAMPLE. GET BACK SOMETHING", sub, INK_DIM, 1.6
+        d, (82, 168), "A LOOP AND VOCAL CHOP MACHINE.", sub, INK_DIM, 1.6
     )
     tracked_text(
-        d, (82, 196), "YOU WOULD NOT HAVE MADE ON PURPOSE.", sub, INK_DIM, 1.6
+        d, (82, 196), "ROLL IT, CUT IT, KEEP IT. EVERYTHING AT 120.", sub, INK_DIM, 1.6
     )
 
     # Footer: the actual effect pool, and the privacy fact.
     foot = load_font("martian-700.ttf", 17)
     tracked_text(
-        d, (82, 500), "REVERSE · CHOP · BITCRUSH · PITCH · DRIVE", foot, SIGNAL, 2.2
+        d, (82, 500), "REVERSE · CHOP · BITCRUSH · PITCH · DRIVE · REVERB",
+        foot, SIGNAL, 2.2
     )
     small = load_font("martian-400.ttf", 16)
     tracked_text(d, (82, 540), "RUNS IN YOUR BROWSER. NOTHING UPLOADS.", small, INK_FAINT, 2.0)

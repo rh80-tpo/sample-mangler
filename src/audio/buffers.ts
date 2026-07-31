@@ -83,6 +83,56 @@ export function normalize(pcm: Pcm, ceiling = CEILING): Pcm {
   }
 }
 
+/**
+ * Same thing without the allocation. Only safe on a buffer we produced
+ * ourselves, never on the user's decoded source. On a three minute stereo
+ * sample this is 69MB not allocated.
+ */
+export function normalizeInPlace(pcm: Pcm, ceiling = CEILING): Pcm {
+  const peak = peakOf(pcm)
+  if (peak < 1e-5) return pcm
+  const gain = ceiling / peak
+  for (const ch of pcm.channels) {
+    for (let i = 0; i < ch.length; i++) ch[i] *= gain
+  }
+  return pcm
+}
+
+/** Independent copy, so the caller can mutate without touching the original. */
+export function clonePcm(pcm: Pcm): Pcm {
+  return {
+    sampleRate: pcm.sampleRate,
+    channels: pcm.channels.map((ch) => new Float32Array(ch)),
+  }
+}
+
+/**
+ * Wrap the tail back over the head so the buffer joins to itself.
+ *
+ * A hard cut to an exact bar length lands on an arbitrary sample value, and a
+ * fade to silence at both ends puts an audible hole at the loop point. This
+ * crossfades the last stretch toward what the start sounds like, which is the
+ * standard sampler loop crossfade and the difference between a loop you can
+ * leave running and one you can hear repeating.
+ */
+export function applyLoopSeam(pcm: Pcm, seconds = 0.012): Pcm {
+  const len = pcm.channels[0].length
+  const n = Math.min(Math.floor(seconds * pcm.sampleRate), Math.floor(len / 4))
+  if (n <= 1) return pcm
+  for (const ch of pcm.channels) {
+    // Snapshot the head first: the blend reads it while writing the tail.
+    const head = ch.slice(0, n)
+    for (let i = 0; i < n; i++) {
+      // Equal power, so the crossfade holds level through the middle.
+      const t = i / (n - 1)
+      const a = Math.cos((t * Math.PI) / 2)
+      const b = Math.sin((t * Math.PI) / 2)
+      ch[len - n + i] = ch[len - n + i] * a + head[i] * b
+    }
+  }
+  return pcm
+}
+
 /** Short fades at both ends so playback and looping never click. */
 export function applyEdgeFades(pcm: Pcm, seconds = 0.004): Pcm {
   const n = Math.min(

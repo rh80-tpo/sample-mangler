@@ -1,5 +1,11 @@
-/** The five effects in the pool. */
-export type EffectId = 'reverse' | 'chop' | 'bitcrush' | 'pitch' | 'drive'
+/** The effects pool. */
+export type EffectId =
+  | 'reverse'
+  | 'chop'
+  | 'bitcrush'
+  | 'pitch'
+  | 'drive'
+  | 'reverb'
 
 /** Every effect can be switched out of the chain without losing its settings. */
 type Bypassable = { enabled: boolean }
@@ -37,12 +43,23 @@ export type DriveSpec = Bypassable & {
   oversample: 'none' | '2x' | '4x'
 }
 
+export type ReverbSpec = Bypassable & {
+  id: 'reverb'
+  /** Freeverb room size, 0 to 1. */
+  size: number
+  /** High-frequency damping in Hz. Lower is darker. */
+  damp: number
+  /** Wet/dry. */
+  mix: number
+}
+
 export type EffectSpec =
   | ReverseSpec
   | ChopSpec
   | BitcrushSpec
   | PitchSpec
   | DriveSpec
+  | ReverbSpec
 
 /** A single roll: an ordered list of effects with locked-in parameters. */
 export type ChainSpec = {

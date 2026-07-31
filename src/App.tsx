@@ -10,6 +10,24 @@ import { Rack } from './components/Rack'
 import type { ChainSpec } from './audio/types'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample, type GeneratorId } from './audio/generate'
+import {
+  BAR_CHOICES,
+  NO_FIT,
+  barLabel,
+  describeLength,
+  nearestBars,
+  type FitMode,
+  type FitSpec,
+} from './audio/fit'
+import {
+  regionIsReal,
+  regionSeconds,
+  slicePcm,
+  type Region,
+} from './audio/slice'
+import { Library } from './components/Library'
+import { Wordmark } from './components/Wordmark'
+import { addItem, createFolder, listFolders } from './lib/library'
 import { encodeWav } from './audio/wav'
 import './styles/app.css'
 
@@ -34,6 +52,32 @@ function summarise(pcm: Pcm | null): string {
   if (!pcm) return 'no signal'
   const ch = pcm.channels.length === 1 ? 'mono' : 'stereo'
   return `${fmtDuration(durationOf(pcm))} · ${ch} · ${(pcm.sampleRate / 1000).toFixed(1)}k`
+}
+
+/** Loop switch. One per panel, so each sound loops on its own terms. */
+function LoopToggle({
+  on,
+  onToggle,
+  label,
+}: {
+  on: boolean
+  onToggle: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      className="loop"
+      aria-pressed={on}
+      onClick={onToggle}
+      title="Loop"
+    >
+      <span aria-hidden="true">loop</span>
+      <span className="sr-only">
+        {on ? `Looping the ${label}. Turn off.` : `Loop the ${label}.`}
+      </span>
+    </button>
+  )
 }
 
 function baseName(name: string): string {
@@ -65,6 +109,17 @@ export function App() {
    * sample runs out.
    */
   const [cursor, setCursor] = useState(0)
+  // Loop is on by default: this is a tool for auditioning loops and chops, and
+  // hearing one pass of a candidate tells you almost nothing about it.
+  const [loop, setLoop] = useState(true)
+  const [region, setRegion] = useState<Region | null>(null)
+  const [fit, setFit] = useState<FitSpec>(NO_FIT)
+  // Read through a ref so the render callbacks do not have to be rebuilt (and
+  // the render queue reset) every time a length control moves.
+  const fitRef = useRef(fit)
+  fitRef.current = fit
+  const [libOpen, setLibOpen] = useState(false)
+  const [libRev, setLibRev] = useState(0)
   const [jolt, setJolt] = useState(0)
   const [announce, setAnnounce] = useState('')
 
@@ -94,6 +149,9 @@ export function App() {
   const current =
     target === 'source' ? source : (result?.pcm ?? source)
 
+  /** A selection only applies to the panel it was drawn on. */
+  const activeRegion = regionIsReal(region) ? region : null
+
   const togglePlay = useCallback(async () => {
     if (!current) return
     if (playback.playing) {
@@ -103,23 +161,57 @@ export function App() {
       return
     }
     // Picks up from the cursor, so play after a seek starts where you put it.
-    await playback.play(current, cursor)
+    await playback.play(current, cursor, { loop, region: activeRegion })
     setPlaying(true)
-  }, [current, playback, cursor])
+  }, [current, playback, cursor, loop, activeRegion])
 
   /** Click or keyboard on a panel: point the transport there and play from it. */
   const seekTo = useCallback(
     async (which: 'source' | 'mangled', position: number) => {
       const pcm = which === 'source' ? source : result?.pcm
       if (!pcm) return
+      const samePanel = which === target
       setTarget(which)
       setCursor(position)
       setPlayhead(position)
-      await playback.play(pcm, position)
+      await playback.play(pcm, position, {
+        loop,
+        region: samePanel ? activeRegion : null,
+      })
       setPlaying(true)
     },
-    [source, result, playback],
+    [source, result, playback, target, loop, activeRegion],
   )
+
+  /** Selecting a region restarts playback inside it, so you hear the edit. */
+  const changeRegion = useCallback(
+    (which: 'source' | 'mangled', next: Region | null) => {
+      setTarget(which)
+      setRegion(next)
+      const pcm = which === 'source' ? source : result?.pcm
+      if (!pcm) return
+      const real = regionIsReal(next) ? next : null
+      if (playback.playing || (real && loop)) {
+        setCursor(real ? real.start : 0)
+        void playback
+          .play(pcm, real ? real.start : 0, { loop, region: real })
+          .then(() => setPlaying(true))
+      }
+    },
+    [source, result, playback, loop],
+  )
+
+  // Toggling loop takes effect immediately rather than at the next press.
+  const toggleLoop = useCallback(() => {
+    const next = !loop
+    setLoop(next)
+    if (playback.playing && current) {
+      void playback.play(current, playback.progress() ?? cursor, {
+        loop: next,
+        region: activeRegion,
+      })
+    }
+  }, [loop, playback, current, cursor, activeRegion])
 
   /** Shared by file loads and generated samples. */
   const adopt = useCallback(
@@ -131,8 +223,17 @@ export function App() {
       setEdited(false)
       setTarget('mangled')
       setCursor(0)
+      setRegion(null)
+      // Snap to the nearest musical length so the first roll is already on the
+      // grid and loopable, rather than an arbitrary tail you have to fix.
+      const bars = nearestBars(durationOf(pcm))
+      const nextFit: FitSpec = { bars, mode: 'trim' }
+      setFit(nextFit)
+      fitRef.current = nextFit
       rollCount.current = 0
-      setAnnounce(`Loaded ${name}, ${fmtDuration(durationOf(pcm))}.`)
+      setAnnounce(
+        `Loaded ${name}, ${fmtDuration(durationOf(pcm))}, snapped to ${bars} bars.`,
+      )
     },
     [],
   )
@@ -267,7 +368,7 @@ export function App() {
       try {
         let target: ChainSpec | null = next
         while (target) {
-          const { pcm } = await renderChain(source, target)
+          const { pcm } = await renderChain(source, target, fitRef.current)
           setResult({ pcm, seed: target.seed })
           target = queue.current.pending
           queue.current.pending = null
@@ -292,6 +393,22 @@ export function App() {
       void runRender(next)
     },
     [runRender],
+  )
+
+  /** Length changes re-render the same chain rather than rolling a new one. */
+  const changeFit = useCallback(
+    (next: FitSpec) => {
+      setFit(next)
+      fitRef.current = next
+      // A different length invalidates any selection drawn on the old one.
+      setRegion(null)
+      setCursor(0)
+      if (chain) {
+        setEdited(true)
+        void runRender(chain)
+      }
+    },
+    [chain, runRender],
   )
 
   // When a control settles, pick playback back up where it was so a tweak can
@@ -331,7 +448,7 @@ export function App() {
 
       const seed = freshSeed()
       const rolled = rollChain(seed, durationOf(source))
-      const { pcm } = await renderChain(source, rolled)
+      const { pcm } = await renderChain(source, rolled, fitRef.current)
       rollCount.current += 1
       setResult({ pcm, seed })
       setChain(rolled)
@@ -361,24 +478,60 @@ export function App() {
     }
   }, [source, busy, playback, startReveal])
 
-  // --- export --------------------------------------------------------
-  const exportWav = useCallback(() => {
-    if (!result) return
-    // Encodes the same Pcm the preview plays. There is no second render.
-    const blob = encodeWav(result.pcm)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
+  // --- export and save -------------------------------------------------
+  /**
+   * What export and save both operate on: the previewed buffer, cut down to
+   * the selection when there is one. Still the same buffer that plays, so the
+   * file keeps matching what was heard.
+   */
+  const outputPcm = useCallback((): Pcm | null => {
+    if (!result) return null
+    const useRegion = target === 'mangled' && activeRegion
+    return useRegion ? slicePcm(result.pcm, activeRegion) : result.pcm
+  }, [result, target, activeRegion])
+
+  const outputName = useCallback((): string => {
+    if (!result) return 'mangled'
     // The seed alone reproduces a rolled chain but not a hand-edited one, so
     // the name says which it is rather than implying it can be recreated.
     const stamp = edited ? `${result.seed.toString(36)}-edit` : result.seed.toString(36)
-    a.download = `${baseName(fileName)}-mangled-${stamp}.wav`
+    const cut = target === 'mangled' && activeRegion ? '-cut' : ''
+    return `${baseName(fileName)}-mangled-${stamp}${cut}`
+  }, [result, fileName, edited, target, activeRegion])
+
+  const exportWav = useCallback(() => {
+    const pcm = outputPcm()
+    if (!pcm) return
+    const blob = encodeWav(pcm)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${outputName()}.wav`
     document.body.appendChild(a)
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 4000)
     setAnnounce(`Exported ${a.download}.`)
-  }, [result, fileName, edited])
+  }, [outputPcm, outputName])
+
+  /** Drop the current output into a folder, making one if none exists yet. */
+  const saveToLibrary = useCallback(async () => {
+    const pcm = outputPcm()
+    if (!pcm) return
+    const folders = await listFolders()
+    const folder = folders[0] ?? (await createFolder('folder 1'))
+    await addItem({
+      folderId: folder.id,
+      name: outputName(),
+      blob: encodeWav(pcm),
+      seconds: durationOf(pcm),
+      sampleRate: pcm.sampleRate,
+      channels: pcm.channels.length,
+    })
+    setLibRev((n) => n + 1)
+    setLibOpen(true)
+    setAnnounce(`Saved to ${folder.name}.`)
+  }, [outputPcm, outputName])
 
   // --- drag and drop -------------------------------------------------
   const onDrop = useCallback(
@@ -469,7 +622,9 @@ export function App() {
       <div className="app__shake" ref={shakeRef}>
         <header className="bar">
           <h1 className="mark" ref={markRef}>
-            sample mangler
+            <span className="sr-only">HAZEN sampler mangler</span>
+            <Wordmark />
+            <span aria-hidden="true">sampler mangler</span>
           </h1>
           <p className="bar__meta">
             {fileName ? (
@@ -501,6 +656,11 @@ export function App() {
                 }
                 active={playing && target === 'source'}
                 onSeek={(p) => void seekTo('source', p)}
+                region={target === 'source' ? activeRegion : null}
+                onRegionChange={(r) => changeRegion('source', r)}
+                tools={
+                  <LoopToggle on={loop} onToggle={toggleLoop} label="source" />
+                }
               />
               <Waveform
                 pcm={result?.pcm ?? null}
@@ -520,6 +680,15 @@ export function App() {
                 placeholder="hit mangle"
                 nonce={result?.seed ?? 0}
                 onSeek={result ? (p) => void seekTo('mangled', p) : undefined}
+                region={target === 'mangled' ? activeRegion : null}
+                onRegionChange={
+                  result ? (r) => changeRegion('mangled', r) : undefined
+                }
+                tools={
+                  result ? (
+                    <LoopToggle on={loop} onToggle={toggleLoop} label="mangled" />
+                  ) : null
+                }
               />
             </>
           ) : (
@@ -541,8 +710,9 @@ export function App() {
               <div className="drop__inner">
                 <p className="drop__head">drop a sample</p>
                 <p className="drop__sub">
-                  wav, mp3, aiff, flac. built for stems, one shots and loops
-                  under 30 seconds.
+                  a loop and vocal chop machine. drop something in or build it
+                  here, roll it, cut the bit you want, keep it. everything sits
+                  at 120.
                 </p>
                 <div className="drop__acts">
                   <button
@@ -580,12 +750,75 @@ export function App() {
         </section>
 
         {chain ? (
-          <Rack
-            chain={chain}
-            onChange={onChainChange}
-            onCommit={resumeAfterEdit}
-            busy={busy}
-          />
+          <>
+            <Rack
+              chain={chain}
+              onChange={onChainChange}
+              onCommit={resumeAfterEdit}
+              busy={busy}
+            />
+            <section className="len" aria-label="Output length">
+              <div className="len__head">
+                <span className="len__title">length</span>
+                <span className="len__now">
+                  {result ? describeLength(durationOf(result.pcm)) : ''}
+                  {activeRegion && result
+                    ? ` · selection ${regionSeconds(activeRegion, durationOf(result.pcm)).toFixed(2)}s`
+                    : ''}
+                </span>
+              </div>
+              <div className="len__row">
+                <div className="len__bars" role="group" aria-label="Target length in bars">
+                  <button
+                    type="button"
+                    className="len__opt"
+                    aria-pressed={fit.bars === null}
+                    onClick={() => changeFit({ ...fit, bars: null })}
+                  >
+                    as is
+                  </button>
+                  {BAR_CHOICES.map((b) => (
+                    <button
+                      key={b}
+                      type="button"
+                      className="len__opt"
+                      aria-pressed={fit.bars === b}
+                      onClick={() => changeFit({ ...fit, bars: b })}
+                    >
+                      {barLabel(b)}
+                      <span className="sr-only"> bars</span>
+                    </button>
+                  ))}
+                </div>
+                <div
+                  className="len__modes"
+                  role="group"
+                  aria-label="How to change the length"
+                >
+                  {(
+                    [
+                      ['trim', 'cut or pad, sound untouched'],
+                      ['stretch', 'resample, pitch moves with it'],
+                      ['fit', 'time stretch, pitch held'],
+                    ] as [FitMode, string][]
+                  ).map(([m, hint]) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className="len__opt"
+                      aria-pressed={fit.mode === m}
+                      disabled={fit.bars === null}
+                      title={hint}
+                      onClick={() => changeFit({ ...fit, mode: m })}
+                    >
+                      {m}
+                      <span className="sr-only">. {hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </>
         ) : null}
 
         <footer className="controls">
@@ -620,13 +853,41 @@ export function App() {
           <button
             type="button"
             className="btn btn--ghost"
+            onClick={() => void saveToLibrary()}
+            disabled={!hasResult}
+          >
+            save
+            <span className="sr-only">
+              {activeRegion ? ' the selection to a folder' : ' to a folder'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className="btn btn--ghost"
             onClick={exportWav}
             disabled={!hasResult}
           >
             wav
-            <span className="sr-only"> — download the current result</span>
+            <span className="sr-only">
+              {activeRegion ? ' — download the selection' : ' — download the result'}
+            </span>
           </button>
         </footer>
+
+        <Library
+          open={libOpen}
+          onToggle={() => setLibOpen((v) => !v)}
+          revision={libRev}
+          onNotice={(m) => setAnnounce(m)}
+          onLoad={(item) => {
+            void (async () => {
+              const bytes = await item.blob.arrayBuffer()
+              const decoded = await playback.decode(bytes, sniffSampleRate(bytes))
+              adopt(pcmFrom(decoded), `${item.name}.wav`)
+            })()
+          }}
+        />
 
         {error ? (
           <p className="notice" role="alert">

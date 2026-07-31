@@ -10,24 +10,51 @@ import {
 } from './rng'
 import type { ChainSpec, EffectId, EffectSpec, Op, Pass } from './types'
 
-const POOL: readonly EffectId[] = [
-  'reverse',
-  'chop',
-  'bitcrush',
-  'pitch',
-  'drive',
-]
+/**
+ * How likely each effect is to be drawn into a chain.
+ *
+ * Not uniform, because the effects are not equally loud in the result. Drive
+ * and bitcrush are broadband: once either is in the chain it colours
+ * everything downstream of it, so picking them as often as the others made
+ * every roll sound like the same fizz. Reverse, chop and pitch rearrange the
+ * sample while leaving its character intact, which is what keeps a roll
+ * recognisable as the thing you fed in.
+ *
+ * These are relative weights, not probabilities.
+ */
+const POOL_WEIGHTS: Record<EffectId, number> = {
+  chop: 1.35,
+  pitch: 1.25,
+  reverse: 1.15,
+  reverb: 1.1,
+  drive: 0.46,
+  bitcrush: 0.42,
+}
+
+const POOL = Object.keys(POOL_WEIGHTS) as EffectId[]
+
+/** Draw `count` distinct effects, respecting the weights above. */
+function drawEffects(rng: Rng, count: number): EffectId[] {
+  const remaining = POOL.slice()
+  const picked: EffectId[] = []
+  for (let i = 0; i < count && remaining.length; i++) {
+    const weights = remaining.map((id) => POOL_WEIGHTS[id])
+    const [chosen] = remaining.splice(weighted(rng, weights), 1)
+    picked.push(chosen)
+  }
+  // Position in the chain still gets to be arbitrary.
+  return shuffled(rng, picked)
+}
 
 /**
  * How many effects land in a roll.
- * Index 0 is one effect, index 4 is all five.
+ * Index 0 is one effect, index 5 is all six.
  *
  * Two and three dominate because that is where results stay recognisable as
- * the source. All five at once is deliberately rare: it is the roll that
- * comes back genuinely destroyed, and it should feel like it cost something
- * to get.
+ * the source. The full stack is deliberately rare: it is the roll that comes
+ * back genuinely destroyed, and it should feel like it cost something to get.
  */
-const SUBSET_WEIGHTS = [0.1, 0.31, 0.32, 0.21, 0.06]
+const SUBSET_WEIGHTS = [0.09, 0.27, 0.29, 0.2, 0.11, 0.04]
 
 /**
  * Intervals that stay in tune with the source. Fifths, fourths, thirds and
@@ -123,7 +150,10 @@ function rollPitch(rng: Rng): EffectSpec {
  * a bug rather than a choice. It gets switched off occasionally on purpose.
  */
 function rollDrive(rng: Rng, solo: boolean): EffectSpec {
-  const hard = chance(rng, solo ? 0.45 : 0.25)
+  // The hard branch is rarer than it was. Full-tilt distortion is a choice you
+  // reach for on a knob, not something a roll should hand you every fourth
+  // time it picks drive at all.
+  const hard = chance(rng, solo ? 0.4 : 0.16)
   return {
     id: 'drive',
     enabled: true,
@@ -131,6 +161,28 @@ function rollDrive(rng: Rng, solo: boolean): EffectSpec {
       ? randRange(rng, 0.62, 0.92)
       : randRange(rng, solo ? 0.35 : 0.18, 0.62),
     oversample: chance(rng, 0.8) ? pick(rng, ['2x', '4x'] as const) : 'none',
+  }
+}
+
+/**
+ * Reverb here is a space to throw the wreckage into, not a polish. Mix sits
+ * mostly between a fifth and a half so the transient survives; the drowned
+ * branch pushes past that for the rolls that turn a one-shot into a wash.
+ *
+ * Damping is the character control. Below about 2kHz it reads as a dark
+ * chamber, up near 12kHz it is bright and splashy. Solo reverb has to be
+ * obviously present, so it never rolls a nearly-dry mix.
+ */
+function rollReverb(rng: Rng, solo: boolean): EffectSpec {
+  const drowned = chance(rng, solo ? 0.4 : 0.22)
+  return {
+    id: 'reverb',
+    enabled: true,
+    size: randRange(rng, solo ? 0.55 : 0.3, 0.92),
+    damp: Math.exp(randRange(rng, Math.log(900), Math.log(12000))),
+    mix: drowned
+      ? randRange(rng, 0.6, 0.92)
+      : randRange(rng, solo ? 0.35 : 0.18, 0.55),
   }
 }
 
@@ -151,6 +203,8 @@ function rollEffect(
       return rollPitch(rng)
     case 'drive':
       return rollDrive(rng, solo)
+    case 'reverb':
+      return rollReverb(rng, solo)
   }
 }
 
@@ -165,12 +219,32 @@ function rollEffect(
 export function rollChain(seed: number, duration: number): ChainSpec {
   const rng = mulberry32(seed)
   const count = weighted(rng, SUBSET_WEIGHTS) + 1
-  const chosen = shuffled(rng, POOL).slice(0, count)
+  const chosen = drawEffects(rng, count)
   const solo = count === 1
-  return {
-    seed,
-    effects: chosen.map((id) => rollEffect(rng, id, duration, solo)),
-  }
+  const effects = chosen.map((id) => rollEffect(rng, id, duration, solo))
+  return { seed, effects: restrain(effects) }
+}
+
+/**
+ * Drive and bitcrush stacked on the same sample is the fizz that made every
+ * roll sound alike. They are still allowed to co-occur, because sometimes that
+ * is exactly the roll you want, but when they do they both give ground: the
+ * drive backs off and the crush keeps more bits.
+ */
+function restrain(effects: EffectSpec[]): EffectSpec[] {
+  const hasDrive = effects.some((e) => e.id === 'drive')
+  const hasCrush = effects.some((e) => e.id === 'bitcrush')
+  if (!hasDrive || !hasCrush) return effects
+
+  return effects.map((e) => {
+    if (e.id === 'drive') {
+      return { ...e, amount: Math.min(e.amount, 0.45) }
+    }
+    if (e.id === 'bitcrush') {
+      return { ...e, bits: Math.max(e.bits, 8) }
+    }
+    return e
+  })
 }
 
 /**
@@ -195,6 +269,7 @@ export function planOps(chain: ChainSpec): Op[] {
         break
       case 'pitch':
       case 'drive':
+      case 'reverb':
         ops.push({ stage: 'node', spec })
         break
     }
@@ -242,6 +317,8 @@ export function describeChain(chain: ChainSpec): string {
           return `pitch(${e.semitones > 0 ? '+' : ''}${e.semitones}st w${e.windowSize.toFixed(3)})`
         case 'drive':
           return `drive(${e.amount.toFixed(2)} ${e.oversample})`
+        case 'reverb':
+          return `verb(sz${e.size.toFixed(2)} ${Math.round(e.damp)}Hz mix${e.mix.toFixed(2)})`
       }
     })
     .join(' > ')

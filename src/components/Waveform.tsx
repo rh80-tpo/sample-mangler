@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { computePeaks, type Peaks } from '../audio/peaks'
 import type { Pcm } from '../audio/buffers'
+import { MIN_REGION, normaliseRegion, type Region } from '../audio/slice'
 
 type Tone = 'source' | 'mangled'
 
@@ -24,6 +25,11 @@ type Props = {
   seconds?: number
   /** Provide this to make the panel a seek control. 0 to 1. */
   onSeek?: (position: number) => void
+  /** Highlighted region, as fractions of the whole. */
+  region?: Region | null
+  onRegionChange?: (region: Region | null) => void
+  /** Per-panel controls, rendered in the header row. */
+  tools?: React.ReactNode
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
@@ -48,9 +54,13 @@ export function Waveform({
   nonce = 0,
   seconds = 0,
   onSeek,
+  region = null,
+  onRegionChange,
+  tools,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
-  const scrubbing = useRef(false)
+  // A press is a seek until it travels far enough to be a selection instead.
+  const drag = useRef<{ from: number; moved: boolean } | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const peaksRef = useRef<Peaks | null>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
@@ -183,6 +193,26 @@ export function Waveform({
       ctx.fillRect(headIndex * COL, 0, 2 * dpr, H)
     }
 
+    // Selected region. Drawn over the waveform as a wash with hard edges, so
+    // the boundaries are readable to the sample rather than approximate.
+    if (region && region.end > region.start && reveal >= 1) {
+      const x1 = Math.floor(region.start * n) * COL
+      const x2 = Math.floor(region.end * n) * COL
+      ctx.globalAlpha = 1
+      ctx.fillStyle = v('--signal-wash')
+      ctx.fillRect(x1, 0, x2 - x1, H)
+      ctx.fillStyle = v('--signal')
+      ctx.fillRect(x1, 0, 2 * dpr, H)
+      ctx.fillRect(x2 - 2 * dpr, 0, 2 * dpr, H)
+      // Dim everything outside the selection so the region reads as the
+      // subject and the rest as context.
+      ctx.fillStyle = v('--ground')
+      ctx.globalAlpha = 0.55
+      ctx.fillRect(0, 0, x1, H)
+      ctx.fillRect(x2, 0, W - x2, H)
+      ctx.globalAlpha = 1
+    }
+
     // Cursor. Solid while playing, a thinner marker when parked.
     if (playhead != null && reveal >= 1) {
       const x = Math.floor(playhead * n) * COL
@@ -192,17 +222,22 @@ export function Waveform({
     }
 
     ctx.globalAlpha = 1
-  }, [size, pcm, tone, reveal, playhead, active, nonce])
+  }, [size, pcm, tone, reveal, playhead, active, nonce, region])
 
-  // --- scrubbing -----------------------------------------------------
+  // --- scrubbing and selection ---------------------------------------
+  const fractionAt = useCallback((clientX: number) => {
+    const el = wrapRef.current
+    if (!el) return 0
+    const box = el.getBoundingClientRect()
+    return Math.max(0, Math.min(1, (clientX - box.left) / box.width))
+  }, [])
+
   const seekToClientX = useCallback(
     (clientX: number) => {
-      const el = wrapRef.current
-      if (!el || !onSeek) return
-      const box = el.getBoundingClientRect()
-      onSeek(Math.max(0, Math.min(1, (clientX - box.left) / box.width)))
+      if (!onSeek) return
+      onSeek(fractionAt(clientX))
     },
-    [onSeek],
+    [onSeek, fractionAt],
   )
 
   const at = playhead ?? 0
@@ -210,7 +245,23 @@ export function Waveform({
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (!onSeek) return
-      const step = e.shiftKey ? 0.01 : 0.02
+      // Alt is the fine step. Shift extends a selection, matching how every
+      // text field on the machine already behaves, so selecting a region is
+      // reachable without a pointer.
+      const step = e.altKey ? 0.005 : 0.02
+      const arrow =
+        e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+
+      if (arrow !== 0 && e.shiftKey && onRegionChange) {
+        e.preventDefault()
+        e.stopPropagation()
+        const anchor = region ? region.start : at
+        const edge = region ? region.end : at
+        const moved = Math.max(0, Math.min(1, edge + arrow * step))
+        onRegionChange(normaliseRegion({ start: anchor, end: moved }))
+        return
+      }
+
       let next: number | null = null
       switch (e.key) {
         case 'ArrowRight':
@@ -235,6 +286,13 @@ export function Waveform({
         case ' ':
           next = at
           break
+        case 'Escape':
+          if (onRegionChange && region) {
+            e.preventDefault()
+            e.stopPropagation()
+            onRegionChange(null)
+          }
+          return
         default:
           return
       }
@@ -242,7 +300,7 @@ export function Waveform({
       e.stopPropagation()
       onSeek(Math.max(0, Math.min(1, next)))
     },
-    [at, onSeek],
+    [at, onSeek, onRegionChange, region],
   )
 
   const interactive = Boolean(onSeek && pcm)
@@ -252,6 +310,7 @@ export function Waveform({
     <div className={`wave wave--${tone}`}>
       <div className="wave__head">
         <span className="wave__label">{label}</span>
+        {tools}
         <span className="wave__meta">{summary}</span>
       </div>
       <div
@@ -271,18 +330,30 @@ export function Waveform({
               'aria-valuetext': spokenAt,
               onKeyDown,
               onPointerDown: (e: React.PointerEvent) => {
-                scrubbing.current = true
                 ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
-                seekToClientX(e.clientX)
+                drag.current = { from: fractionAt(e.clientX), moved: false }
               },
               onPointerMove: (e: React.PointerEvent) => {
-                if (scrubbing.current) seekToClientX(e.clientX)
+                const d = drag.current
+                if (!d) return
+                const now = fractionAt(e.clientX)
+                // Below the threshold this is still a click, not a drag, so
+                // a slightly shaky press seeks instead of selecting 3ms.
+                if (!d.moved && Math.abs(now - d.from) < MIN_REGION) return
+                d.moved = true
+                onRegionChange?.(normaliseRegion({ start: d.from, end: now }))
               },
-              onPointerUp: () => {
-                scrubbing.current = false
+              onPointerUp: (e: React.PointerEvent) => {
+                const d = drag.current
+                drag.current = null
+                if (!d) return
+                if (d.moved) return
+                // A press that never travelled: clear any selection and seek.
+                onRegionChange?.(null)
+                seekToClientX(e.clientX)
               },
               onPointerCancel: () => {
-                scrubbing.current = false
+                drag.current = null
               },
             }
           : {})}

@@ -43,6 +43,7 @@ export const EFFECT_LABELS: Record<EffectSpec['id'], string> = {
   bitcrush: 'bitcrush',
   pitch: 'pitch',
   drive: 'drive',
+  reverb: 'reverb',
 }
 
 export function paramsFor(spec: EffectSpec): Param[] {
@@ -123,6 +124,24 @@ export function paramsFor(spec: EffectSpec): Param[] {
           label: 'alias',
           options: ['none', '2x', '4x'] as const,
         },
+      ]
+
+    case 'reverb':
+      return [
+        { kind: 'knob', key: 'size', label: 'size', min: 0, max: 0.98, step: 0.01, format: pct },
+        {
+          kind: 'knob',
+          key: 'damp',
+          label: 'damp',
+          min: 200,
+          max: 18000,
+          step: 50,
+          // Log taper: the audible difference between 400Hz and 800Hz is huge,
+          // between 14k and 15k it is nothing.
+          curve: 0.42,
+          format: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`),
+        },
+        { kind: 'knob', key: 'mix', label: 'mix', min: 0, max: 1, step: 0.01, format: pct },
       ]
   }
 }

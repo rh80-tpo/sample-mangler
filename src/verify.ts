@@ -166,6 +166,90 @@ async function run() {
     log()
   }
 
+  // --- loops actually loop ----------------------------------------------
+  // A bar-length result exists to be played round and round. That means two
+  // things must hold: the length is exactly the bar count asked for, and the
+  // join from the last sample back to the first does not step.
+  {
+    log('=== loop integrity ===')
+    log()
+    const original = await loadFixture(ctx, 'drums.wav')
+    for (const bars of [0.5, 1, 2]) {
+      for (const mode of ['trim', 'stretch', 'fit'] as const) {
+        const chain = rollChain(freshSeed(), durationOf(original))
+        const { pcm } = await renderChain(original, chain, { bars, mode })
+        const seconds = durationOf(pcm)
+        const wanted = bars * 2 // 120bpm, 4/4
+        check(
+          `${bars} bar ${mode}: exact length`,
+          Math.abs(seconds - wanted) < 0.002,
+          `${seconds.toFixed(4)}s vs ${wanted}s`,
+        )
+
+        // Step across the loop point, measured against the material's own
+        // typical sample-to-sample movement so it scales with the content.
+        const ch = pcm.channels[0]
+        let innerStep = 0
+        for (let i = 1; i < ch.length; i++) innerStep += Math.abs(ch[i] - ch[i - 1])
+        innerStep /= ch.length - 1
+        const seam = Math.abs(ch[0] - ch[ch.length - 1])
+        check(
+          `${bars} bar ${mode}: seam is not a step`,
+          seam <= Math.max(innerStep * 6, 0.02),
+          `seam ${seam.toFixed(5)} vs typical ${innerStep.toFixed(5)}`,
+        )
+      }
+    }
+    log()
+  }
+
+  // --- pool balance -----------------------------------------------------
+  // The engine used to lean on drive and bitcrush: uniform selection meant the
+  // two broadband effects showed up as often as the structural ones, and
+  // whenever either landed it painted over everything else. This measures the
+  // actual distribution rather than trusting the weights.
+  {
+    log('=== effect distribution over 4000 rolls ===')
+    log()
+    const counts: Record<string, number> = {}
+    let both = 0
+    let neither = 0
+    const ROLLS = 4000
+    for (let i = 0; i < ROLLS; i++) {
+      const ids = rollChain(freshSeed(), 3).effects.map((e) => e.id)
+      for (const id of ids) counts[id] = (counts[id] ?? 0) + 1
+      const d = ids.includes('drive')
+      const b = ids.includes('bitcrush')
+      if (d && b) both++
+      if (!d && !b) neither++
+    }
+    const pct = (n: number) => ((n / ROLLS) * 100).toFixed(1)
+    for (const id of Object.keys(counts).sort((a, b) => counts[b] - counts[a])) {
+      log(`  ${id.padEnd(9)} in ${pct(counts[id]).padStart(5)}% of rolls`)
+    }
+    log(`  drive+crush together ${pct(both)}%   neither ${pct(neither)}%`)
+
+    const grit = (counts.drive ?? 0) + (counts.bitcrush ?? 0)
+    const structural =
+      (counts.chop ?? 0) + (counts.reverse ?? 0) + (counts.pitch ?? 0)
+    check(
+      'grit does not dominate',
+      grit < structural * 0.75,
+      `drive+bitcrush ${grit} vs chop+reverse+pitch ${structural}`,
+    )
+    check(
+      'most rolls have no grit at all',
+      neither / ROLLS > 0.35,
+      `${pct(neither)}% of rolls avoid both`,
+    )
+    check(
+      'drive and crush rarely stack',
+      both / ROLLS < 0.14,
+      `${pct(both)}% have both`,
+    )
+    log()
+  }
+
   // --- the built-in generators -----------------------------------------
   // Each one has to make real audio, twice in a row without repeating itself,
   // and survive being mangled afterwards.
@@ -253,6 +337,13 @@ async function run() {
       { name: 'pitch semitones', a: only({ ...pitchBase, semitones: -12 }), b: only({ ...pitchBase, semitones: 7 }) },
       { name: 'pitch grain', a: only({ ...pitchBase, semitones: 5, windowSize: 0.01 }), b: only({ ...pitchBase, semitones: 5, windowSize: 0.25 }) },
     )
+    const verbBase = { id: 'reverb' as const, enabled: true, size: 0.6, damp: 4000, mix: 0.5 }
+    cases.push(
+      { name: 'reverb size', a: only({ ...verbBase, size: 0.05 }), b: only({ ...verbBase, size: 0.95 }) },
+      { name: 'reverb damp', a: only({ ...verbBase, damp: 400 }), b: only({ ...verbBase, damp: 16000 }) },
+      { name: 'reverb mix', a: only({ ...verbBase, mix: 0 }), b: only({ ...verbBase, mix: 1 }) },
+      { name: 'reverb bypass', a: only({ ...verbBase, mix: 0.9, enabled: false }), b: only({ ...verbBase, mix: 0.9, enabled: true }) },
+    )
     const driveBase = { id: 'drive' as const, enabled: true, amount: 0.5, oversample: '2x' as const }
     cases.push(
       { name: 'drive amount', a: only({ ...driveBase, amount: 0.02 }), b: only({ ...driveBase, amount: 0.98 }) },
@@ -275,6 +366,76 @@ async function run() {
         moved,
         `corr ${sim.toFixed(4)}, frames ${lenA} vs ${lenB}`,
       )
+    }
+    log()
+  }
+
+  // --- long samples ----------------------------------------------------
+  // Three minutes is the stated ceiling, so it gets measured rather than
+  // assumed. Timings here are real: this loop awaits actual work instead of
+  // polling on a timer.
+  {
+    log('=== three minute sample ===')
+    log()
+    try {
+      const t0 = performance.now()
+      const res = await fetch('/test-audio/edge/long-180s.wav')
+      const arr = await res.arrayBuffer()
+      const fetchMs = performance.now() - t0
+
+      const t1 = performance.now()
+      const decoded = await ctx.decodeAudioData(arr)
+      const original = pcmFrom(decoded)
+      const decodeMs = performance.now() - t1
+
+      const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+      const mb = () => (mem ? Math.round(mem.usedJSHeapSize / 1048576) : 0)
+      const before = mb()
+
+      log(
+        `  ${durationOf(original).toFixed(1)}s  ${original.channels.length}ch  ${(original.sampleRate / 1000).toFixed(1)}k   fetch ${fetchMs.toFixed(0)}ms  decode ${decodeMs.toFixed(0)}ms`,
+      )
+
+      let worstRender = 0
+      let peakMb = before
+      for (let i = 0; i < 4; i++) {
+        const chain = rollChain(freshSeed(), durationOf(original))
+        const r = await renderChain(original, chain)
+        worstRender = Math.max(worstRender, r.elapsedMs)
+        peakMb = Math.max(peakMb, mb())
+        log(
+          `  roll ${i + 1}  ${r.elapsedMs.toFixed(0)}ms  ${durationOf(r.pcm).toFixed(1)}s  peak ${peakOf(r.pcm).toFixed(3)}  heap ${mb()}MB`,
+        )
+        log(`    ${describeChain(chain)}`)
+      }
+
+      const t2 = performance.now()
+      const chain = rollChain(freshSeed(), durationOf(original))
+      const { pcm } = await renderChain(original, chain)
+      const blob = encodeWav(pcm)
+      const encodeMs = performance.now() - t2
+      const after = mb()
+
+      check(
+        'renders a 3 minute sample',
+        worstRender < 20000,
+        `worst roll ${worstRender.toFixed(0)}ms`,
+      )
+      check(
+        'exports a 3 minute sample',
+        blob.size > 1_000_000,
+        `${(blob.size / 1048576).toFixed(1)}MB wav in ${encodeMs.toFixed(0)}ms total`,
+      )
+      check(
+        'long-sample heap stays sane',
+        !mem || after - before < 900,
+        `start ${before}MB, peak ${peakMb}MB, end ${after}MB`,
+      )
+    } catch (e) {
+      log(
+        `  <span class="bad">could not run: ${e instanceof Error ? e.message : String(e)}</span>`,
+      )
+      log('  (run: node tools/make-long.mjs 180)')
     }
     log()
   }

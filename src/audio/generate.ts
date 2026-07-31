@@ -1,6 +1,7 @@
 import { applyEdgeFades, normalize, type Pcm } from './buffers'
 import { Biquad, VOWELS, adsr, midi, polyBlepSaw, reverb } from './dsp'
 import { mulberry32, pick, randInt, randRange, type Rng } from './rng'
+import { BPM, SECONDS_PER_BAR } from './fit'
 
 export type GeneratorId =
   | 'synth'
@@ -177,56 +178,86 @@ function makeChoir(ctx: Ctx): Pcm {
   )
 }
 
-/** One voice moving between vowels, with breath. Reads as a sung syllable. */
+/**
+ * A sung phrase of two to five syllables, on the grid at 120.
+ *
+ * Built as syllables rather than one held vowel because this is chop material:
+ * what you actually want to cut up is a line with separate hits in it, each
+ * with its own vowel, its own note, and a consonant-ish transient at the front
+ * to cut against. One sustained "aah" gives you nothing to slice.
+ */
 function makeVocal(ctx: Ctx): Pcm {
-  const note = randInt(ctx.rng, 52, 67)
-  const f0 = midi(note)
   const dur = ctx.n / ctx.sr
   const [l, r] = blank(ctx.n)
-  const seq = [pick(ctx.rng, ['a', 'e', 'i', 'o', 'u']), pick(ctx.rng, ['a', 'e', 'i', 'o', 'u'])]
-  const bandsL = [0, 1, 2].map(() => new Biquad('bandpass', 700, 10, ctx.sr))
-  const bandsR = [0, 1, 2].map(() => new Biquad('bandpass', 700, 10, ctx.sr))
-  const vibRate = randRange(ctx.rng, 4.8, 6.6)
-  const vibDepth = randRange(ctx.rng, 0.008, 0.02)
-  const breath = randRange(ctx.rng, 0.02, 0.07)
-  const slide = randRange(ctx.rng, -2, 2)
-  let phase = 0
+  const root = randInt(ctx.rng, 55, 67)
+  // Stepwise motion within a scale, the way a sung line actually moves.
+  const scale = pick(ctx.rng, [
+    [0, 2, 3, 5, 7, 8, 10],
+    [0, 2, 4, 5, 7, 9, 11],
+    [0, 3, 5, 7, 10],
+  ])
+  const syllables = randInt(ctx.rng, 2, 5)
+  const vowels = ['a', 'e', 'i', 'o', 'u'] as const
+  const slot = dur / syllables
+  let degree = randInt(ctx.rng, 0, scale.length - 1)
 
-  for (let i = 0; i < ctx.n; i++) {
-    const t = i / ctx.sr
-    const p = t / dur
-    // Crossfade the formant targets so the vowel actually moves.
-    const from = VOWELS[seq[0]]
-    const to = VOWELS[seq[1]]
-    const m = Math.min(1, Math.max(0, (p - 0.25) / 0.45))
-    if (i % 64 === 0) {
+  for (let s = 0; s < syllables; s++) {
+    // Wander by a step or two rather than jumping around.
+    degree = Math.max(
+      0,
+      Math.min(scale.length - 1, degree + randInt(ctx.rng, -2, 2)),
+    )
+    const f0 = midi(root + scale[degree] + (ctx.rng() < 0.2 ? 12 : 0))
+    const vowel = VOWELS[pick(ctx.rng, vowels)]
+    const start = Math.floor(s * slot * ctx.sr)
+    // Slightly short of the slot so syllables separate instead of smearing.
+    const len = Math.floor(slot * ctx.sr * randRange(ctx.rng, 0.55, 0.92))
+    const bandsL = vowel.map(([f, , q]) => new Biquad('bandpass', f, q, ctx.sr))
+    const bandsR = vowel.map(([f, , q]) => new Biquad('bandpass', f, q, ctx.sr))
+    const gains = vowel.map(([, g]) => g)
+    const vibRate = randRange(ctx.rng, 4.8, 6.6)
+    const vibDepth = randRange(ctx.rng, 0.006, 0.018)
+    const breath = randRange(ctx.rng, 0.02, 0.06)
+    // A short noise burst at the onset stands in for a consonant, which is
+    // what gives a chop something to land on.
+    const consonant = ctx.rng() < 0.65
+    const cLen = Math.floor(randRange(ctx.rng, 0.012, 0.035) * ctx.sr)
+    const cFilter = new Biquad('highpass', randRange(ctx.rng, 1800, 5200), 0.8, ctx.sr)
+    const attack = randRange(ctx.rng, 0.012, 0.05)
+    const sLen = len / ctx.sr
+    let phase = ctx.rng()
+
+    for (let i = 0; i < len; i++) {
+      const at = start + i
+      if (at >= ctx.n) break
+      const t = i / ctx.sr
+      const vib = 1 + Math.sin(t * vibRate * Math.PI * 2) * vibDepth
+      const inc = (f0 * vib) / ctx.sr
+      const src = polyBlepSaw(phase, inc) + (ctx.rng() * 2 - 1) * breath
+      phase += inc
+      if (phase >= 1) phase -= 1
+      let v = 0
+      let w = 0
       for (let b = 0; b < 3; b++) {
-        const f = from[b][0] * (1 - m) + to[b][0] * m
-        const q = from[b][2] * (1 - m) + to[b][2] * m
-        bandsL[b].set('bandpass', f, q, ctx.sr)
-        bandsR[b].set('bandpass', f, q, ctx.sr)
+        v += bandsL[b].process(src) * gains[b]
+        w += bandsR[b].process(src) * gains[b]
       }
+      const env = adsr(t, sLen, attack, 0.08, 0.75, sLen * 0.35)
+      let a = v * env
+      let bch = w * env * 0.97
+      if (consonant && i < cLen) {
+        const burst = cFilter.process(ctx.rng() * 2 - 1) * (1 - i / cLen) * 0.55
+        a += burst
+        bch += burst * 0.94
+      }
+      l[at] += a
+      r[at] += bch
     }
-    const vib = 1 + Math.sin(t * vibRate * Math.PI * 2) * vibDepth * Math.min(1, p * 3)
-    const f = f0 * vib * Math.pow(2, (slide * p) / 12)
-    const inc = f / ctx.sr
-    const src = polyBlepSaw(phase, inc) + (ctx.rng() * 2 - 1) * breath
-    phase += inc
-    if (phase >= 1) phase -= 1
-    let v = 0
-    let w = 0
-    for (let b = 0; b < 3; b++) {
-      const g = from[b][1] * (1 - m) + to[b][1] * m
-      v += bandsL[b].process(src) * g
-      w += bandsR[b].process(src) * g
-    }
-    const env = adsr(t, dur, 0.09, 0.2, 0.8, dur * 0.3)
-    l[i] = v * env
-    r[i] = w * env * 0.97
   }
+
   return finish(
-    reverb(l, ctx.sr, 0.24, 0.72) as Float32Array<ArrayBuffer>,
-    reverb(r, ctx.sr, 0.24, 0.73) as Float32Array<ArrayBuffer>,
+    reverb(l, ctx.sr, 0.18, 0.68) as Float32Array<ArrayBuffer>,
+    reverb(r, ctx.sr, 0.18, 0.69) as Float32Array<ArrayBuffer>,
     ctx.sr,
   )
 }
@@ -302,9 +333,11 @@ function makeKeys(ctx: Ctx): Pcm {
 
 /** Two bars of drums with a bit of variation, so it is loopable. */
 function makeDrums(ctx: Ctx): Pcm {
-  const bpm = randInt(ctx.rng, 118, 152)
-  const beat = 60 / bpm
-  const n = Math.floor(beat * 8 * ctx.sr)
+  // Locked to the site tempo rather than rolling its own, so a generated loop
+  // sits against everything else without being re-fitted.
+  const beat = 60 / BPM
+  const n = ctx.n
+  const bars = Math.max(1, Math.round(n / ctx.sr / (beat * 4)))
   const [l, r] = blank(n)
   const step = (beat / 2) * ctx.sr
   const rng = ctx.rng
@@ -355,13 +388,14 @@ function makeDrums(ctx: Ctx): Pcm {
   }
 
   const kickPattern = pick(rng, [[0, 6], [0, 5, 6], [0, 3, 6], [0, 6, 7]])
-  for (let bar = 0; bar < 2; bar++) {
+  for (let bar = 0; bar < bars; bar++) {
     const base = bar * beat * 4 * ctx.sr
     for (let s = 0; s < 8; s++) {
       const at = Math.floor(base + s * step)
+      if (at >= n) break
       if (kickPattern.includes(s)) kick(at, randRange(rng, 0.85, 1))
       if (s === 4) snare(at, randRange(rng, 0.75, 0.9))
-      if (bar === 1 && s === 7 && rng() < 0.5) snare(at, 0.45)
+      if (bar === bars - 1 && s === 7 && rng() < 0.5) snare(at, 0.45)
       if (rng() < 0.92) hat(at, s % 2 === 0 ? 0.42 : 0.24, s === 7 && rng() < 0.4)
     }
   }
@@ -441,15 +475,19 @@ function makeNoise(ctx: Ctx): Pcm {
 }
 
 /** Roughly how long each kind of sample wants to be. */
-const LENGTHS: Record<GeneratorId, [number, number]> = {
-  synth: [1.6, 2.6],
-  choir: [3.0, 4.5],
-  vocal: [1.8, 3.0],
-  bass: [1.2, 2.2],
-  keys: [2.4, 4.0],
-  drums: [0, 0], // set by tempo
-  pad: [3.5, 5.0],
-  noise: [1.6, 3.2],
+/**
+ * Lengths in bars at 120, not arbitrary seconds. Everything this tool makes is
+ * meant to loop, so material that starts on the grid saves a step.
+ */
+const LENGTH_BARS: Record<GeneratorId, number[]> = {
+  synth: [0.5, 1, 1],
+  choir: [1, 2, 2],
+  vocal: [1, 1, 2],
+  bass: [0.5, 1],
+  keys: [1, 2],
+  drums: [1, 2, 2],
+  pad: [2, 2, 4],
+  noise: [0.5, 1, 2],
 }
 
 /**
@@ -462,8 +500,8 @@ export function generateSample(
   seed: number,
 ): Pcm {
   const rng = mulberry32(seed)
-  const [lo, hi] = LENGTHS[id]
-  const seconds = id === 'drums' ? 4 : randRange(rng, lo, hi)
+  const bars = pick(rng, LENGTH_BARS[id])
+  const seconds = bars * SECONDS_PER_BAR
   const ctx: Ctx = { sr: sampleRate, rng, n: Math.floor(seconds * sampleRate) }
 
   switch (id) {

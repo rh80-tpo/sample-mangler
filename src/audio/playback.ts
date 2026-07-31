@@ -10,6 +10,9 @@ export class Playback {
   private source: AudioBufferSourceNode | null = null
   private startedAt = 0
   private duration = 0
+  private regionStart = 0
+  private regionEnd = 0
+  private looping = false
   onEnded: (() => void) | null = null
 
   /** Created lazily so the context is opened inside a user gesture. */
@@ -59,8 +62,15 @@ export class Playback {
     return ctx.decodeAudioData(file.slice(0))
   }
 
-  /** `from` is a 0..1 position, used to pick playback back up after an edit. */
-  async play(pcm: Pcm, from = 0) {
+  /**
+   * `from` is a 0..1 position. `region` confines playback (and looping) to a
+   * slice of the buffer, expressed the same way.
+   */
+  async play(
+    pcm: Pcm,
+    from = 0,
+    opts: { loop?: boolean; region?: { start: number; end: number } | null } = {},
+  ) {
     const ctx = this.context()
     if (ctx.state === 'suspended') await ctx.resume()
     this.stop()
@@ -75,10 +85,32 @@ export class Playback {
       }
     }
     this.source = source
-    this.duration = source.buffer.duration
-    const offset = Math.max(0, Math.min(0.999, from)) * this.duration
-    this.startedAt = ctx.currentTime - offset
-    source.start(0, offset)
+
+    const full = source.buffer.duration
+    const region = opts.region
+    const lo = region ? Math.max(0, region.start) * full : 0
+    const hi = region ? Math.min(1, region.end) * full : full
+    this.regionStart = lo
+    this.regionEnd = hi
+    this.duration = full
+    this.looping = Boolean(opts.loop)
+
+    if (opts.loop) {
+      source.loop = true
+      source.loopStart = lo
+      source.loopEnd = hi
+    }
+
+    // `from` is relative to the whole buffer, but a start outside the region
+    // would drop the playhead somewhere the loop never visits.
+    const wanted = Math.max(0, Math.min(0.999, from)) * full
+    const offset = region ? Math.min(Math.max(wanted, lo), hi - 0.001) : wanted
+    this.startedAt = ctx.currentTime - (offset - lo)
+    if (region && !opts.loop) {
+      source.start(0, offset, Math.max(0.01, hi - offset))
+    } else {
+      source.start(0, offset)
+    }
   }
 
   stop() {
@@ -98,10 +130,16 @@ export class Playback {
     return this.source !== null
   }
 
-  /** 0 to 1 through the current buffer, or null when idle. */
+  /**
+   * 0 to 1 through the whole buffer, or null when idle. Wraps within the
+   * region while looping, so the cursor tracks what is actually being heard.
+   */
   progress(): number | null {
     if (!this.source || !this.ctx || this.duration <= 0) return null
-    const t = (this.ctx.currentTime - this.startedAt) / this.duration
-    return Math.max(0, Math.min(1, t))
+    const span = Math.max(1e-6, this.regionEnd - this.regionStart)
+    let elapsed = this.ctx.currentTime - this.startedAt
+    if (this.looping) elapsed = elapsed % span
+    const seconds = this.regionStart + Math.min(elapsed, span)
+    return Math.max(0, Math.min(1, seconds / this.duration))
   }
 }
