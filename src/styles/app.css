@@ -42,7 +42,10 @@
   max-width: 1500px;
   margin: 0 auto;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) repeat(4, auto);
+  /* The stage keeps a real floor. As the rack grows the page scrolls rather
+     than squeezing the waveforms down to a few pixels, which is what they had
+     been doing once a chain got long. */
+  grid-template-rows: auto minmax(260px, 1fr) repeat(4, auto);
   gap: clamp(var(--sp-2), 1.4vh, var(--sp-4));
   will-change: transform;
 }
@@ -126,7 +129,7 @@
 .stage {
   min-height: 0;
   display: grid;
-  grid-template-rows: 1fr 1fr;
+  grid-template-rows: minmax(112px, 1fr) minmax(112px, 1fr);
   gap: clamp(var(--sp-3), 1.8vh, var(--sp-5));
 }
 
@@ -170,6 +173,35 @@
 .wave__meta {
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* Actions that belong to a panel rather than the transport. */
+.wave__btn {
+  min-height: 22px;
+  padding: 0 var(--sp-2);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border: var(--edge) solid var(--hairline-strong);
+  border-radius: var(--radius);
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-snap),
+    background-color var(--dur-fast) var(--ease-snap),
+    border-color var(--dur-fast) var(--ease-snap);
+}
+
+.wave__btn:hover {
+  color: var(--ground);
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+@media (pointer: coarse) {
+  .wave__btn {
+    min-height: 40px;
+    padding: 0 var(--sp-3);
+  }
 }
 
 /* Says what a source selection is going to do, next to the selection itself. */
@@ -614,6 +646,40 @@
   gap: var(--sp-2);
 }
 
+/* The folder saves currently drop into. */
+.fold--active {
+  border-color: color-mix(in srgb, var(--signal) 50%, transparent);
+}
+
+.fold__target {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border: var(--edge) solid var(--hairline-strong);
+  border-radius: 50%;
+  transition: border-color var(--dur-fast) var(--ease-snap),
+    box-shadow var(--dur-fast) var(--ease-snap);
+}
+
+.fold__target:hover {
+  border-color: var(--signal);
+}
+
+.fold__target[aria-checked='true'] {
+  border-color: var(--signal);
+  box-shadow: inset 0 0 0 3px var(--signal);
+}
+
+@media (pointer: coarse) {
+  .fold__target {
+    width: 22px;
+    height: 22px;
+  }
+  .fold__target[aria-checked='true'] {
+    box-shadow: inset 0 0 0 6px var(--signal);
+  }
+}
+
 .fold__head {
   display: flex;
   align-items: center;
@@ -712,14 +778,25 @@
 
 /* ---------------------------------------------------------------- rack */
 
+/*
+ * One row, scrolled sideways when the chain is long.
+ *
+ * Wrapping made the rack taller with every effect added, and the stage above
+ * paid for it. Height stays constant now however many modules there are.
+ */
 .rack {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: stretch;
   gap: var(--edge);
   background: var(--hairline);
   border: var(--edge) solid var(--hairline);
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.mod {
+  flex: 1 0 auto;
 }
 
 /* One module per effect. The hairline gaps come from the flex gap sitting on
@@ -828,11 +905,11 @@
 }
 
 .mod__body--add {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--sp-1);
   align-content: flex-start;
-  max-width: 20rem;
+  width: 15rem;
 }
 
 .addfx {
@@ -871,9 +948,11 @@
   }
 }
 
+/* Knobs stay on one line. The rack scrolls sideways instead of getting taller,
+   because height here is taken straight out of the waveforms. */
 .mod__body {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--sp-4);
   align-items: flex-start;
 }
@@ -1145,6 +1224,20 @@
 /* ---------------------------------------------------------------- small */
 
 @media (max-width: 860px) {
+  /* On a narrow screen a sideways-scrolling rack is worse than a tall one. */
+  .rack {
+    flex-wrap: wrap;
+  }
+  .mod {
+    flex: 1 1 100%;
+  }
+  .mod__body {
+    flex-wrap: wrap;
+  }
+  .mod__body--add {
+    width: auto;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .controls {
     grid-template-columns: repeat(3, 1fr);
   }

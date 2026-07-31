@@ -105,6 +105,11 @@ export function App() {
   const fileInput = useRef<HTMLInputElement>(null)
 
   const [source, setSource] = useState<Pcm | null>(null)
+  /**
+   * The file as it decoded, kept so a trim is always reversible. `source` is
+   * whatever is currently in play, which may be a crop of this.
+   */
+  const [fullSource, setFullSource] = useState<Pcm | null>(null)
   const [fileName, setFileName] = useState('')
   const [result, setResult] = useState<Result | null>(null)
   const [chain, setChain] = useState<ChainSpec | null>(null)
@@ -151,6 +156,9 @@ export function App() {
   fitRef.current = fit
   const [libOpen, setLibOpen] = useState(false)
   const [libRev, setLibRev] = useState(0)
+  /** Which folder SAVE drops into. */
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
+  const [activeFolderName, setActiveFolderName] = useState('')
   const [jolt, setJolt] = useState(0)
   const [announce, setAnnounce] = useState('')
 
@@ -268,6 +276,7 @@ export function App() {
   const adopt = useCallback(
     (pcm: Pcm, name: string) => {
       setSource(pcm)
+      setFullSource(pcm)
       setFileName(name)
       setResult(null)
       setChain(null)
@@ -288,6 +297,49 @@ export function App() {
     },
     [],
   )
+
+  /**
+   * Crop the source down to the selection, for good.
+   *
+   * The selection already limits what a roll processes, but the panel still
+   * shows the whole file and every later selection is measured against it.
+   * Committing the crop means the ends are gone: they cannot be mangled, they
+   * do not stretch the waveform, and the bar snap is measured on what is left.
+   */
+  const trimSource = useCallback(() => {
+    if (!source || !sourceRegion) return
+    const cropped = slicePcm(source, sourceRegion)
+    playback.stop()
+    setPlaying(false)
+    setPlayhead(null)
+    setSource(cropped)
+    setRegions({ source: null, mangled: null })
+    setCursor(0)
+    const bars = nearestBars(durationOf(cropped))
+    const nextFit: FitSpec = { ...fitRef.current, bars }
+    setFit(nextFit)
+    fitRef.current = nextFit
+    setAnnounce(`Trimmed to ${fmtDuration(durationOf(cropped))}.`)
+  }, [source, sourceRegion, playback])
+
+  /** Put the whole file back. A trim is never destructive to the upload. */
+  const untrimSource = useCallback(() => {
+    if (!fullSource) return
+    playback.stop()
+    setPlaying(false)
+    setPlayhead(null)
+    setSource(fullSource)
+    setRegions({ source: null, mangled: null })
+    setCursor(0)
+    const bars = nearestBars(durationOf(fullSource))
+    const nextFit: FitSpec = { ...fitRef.current, bars }
+    setFit(nextFit)
+    fitRef.current = nextFit
+    setAnnounce(`Restored the full ${fmtDuration(durationOf(fullSource))}.`)
+  }, [fullSource, playback])
+
+  const trimmed =
+    Boolean(source && fullSource && source.channels[0].length !== fullSource.channels[0].length)
 
   /** Clear everything and go back to the drop state. */
   const eject = useCallback(() => {
@@ -610,23 +662,38 @@ export function App() {
   }, [outputPcm, outputName])
 
   /** Drop the current output into a folder, making one if none exists yet. */
-  const saveToLibrary = useCallback(async () => {
-    const pcm = outputPcm()
-    if (!pcm) return
-    const folders = await listFolders()
-    const folder = folders[0] ?? (await createFolder('folder 1'))
-    await addItem({
-      folderId: folder.id,
-      name: outputName(),
-      blob: encodeWav(pcm),
-      seconds: durationOf(pcm),
-      sampleRate: pcm.sampleRate,
-      channels: pcm.channels.length,
-    })
-    setLibRev((n) => n + 1)
-    setLibOpen(true)
-    setAnnounce(`Saved to ${folder.name}.`)
-  }, [outputPcm, outputName])
+  /**
+   * Save the current output into a folder.
+   *
+   * `folderId` targets one directly. Without it, the save goes to whichever
+   * folder is currently marked as the destination, and makes the first one if
+   * the library is empty.
+   */
+  const saveToLibrary = useCallback(
+    async (folderId?: string) => {
+      const pcm = outputPcm()
+      if (!pcm) return
+      const folders = await listFolders()
+      const wanted = folderId ?? activeFolderId
+      const folder =
+        folders.find((f) => f.id === wanted) ??
+        folders[0] ??
+        (await createFolder('folder 1'))
+      await addItem({
+        folderId: folder.id,
+        name: outputName(),
+        blob: encodeWav(pcm),
+        seconds: durationOf(pcm),
+        sampleRate: pcm.sampleRate,
+        channels: pcm.channels.length,
+      })
+      setActiveFolderId(folder.id)
+      setLibRev((n) => n + 1)
+      setLibOpen(true)
+      setAnnounce(`Saved to ${folder.name}.`)
+    },
+    [outputPcm, outputName, activeFolderId],
+  )
 
   // --- drag and drop -------------------------------------------------
   const onDrop = useCallback(
@@ -795,9 +862,27 @@ export function App() {
                   <>
                     <LoopToggle on={loop} onToggle={toggleLoop} label="source" />
                     {sourceRegion ? (
-                      <span className="wave__tag">
-                        mangling {regionSeconds(sourceRegion, durationOf(source)).toFixed(2)}s
-                      </span>
+                      <>
+                        <span className="wave__tag">
+                          mangling {regionSeconds(sourceRegion, durationOf(source)).toFixed(2)}s
+                        </span>
+                        <button
+                          type="button"
+                          className="wave__btn"
+                          onClick={trimSource}
+                        >
+                          trim to this
+                        </button>
+                      </>
+                    ) : null}
+                    {trimmed ? (
+                      <button
+                        type="button"
+                        className="wave__btn"
+                        onClick={untrimSource}
+                      >
+                        undo trim
+                      </button>
                     ) : null}
                   </>
                 }
@@ -1005,9 +1090,12 @@ export function App() {
             onClick={() => void saveToLibrary()}
             disabled={!hasResult}
           >
-            save
+            {/* Naming the destination means you never have to guess where a
+                save landed, or open the drawer to find out. */}
+            save{activeFolderName ? ` → ${activeFolderName}` : ''}
             <span className="sr-only">
-              {activeRegion ? ' the selection to a folder' : ' to a folder'}
+              {mangledRegion ? ' the selection' : ' the result'}
+              {activeFolderName ? '' : ' to a new folder'}
             </span>
           </button>
 
@@ -1028,6 +1116,13 @@ export function App() {
           open={libOpen}
           onToggle={() => setLibOpen((v) => !v)}
           revision={libRev}
+          activeId={activeFolderId}
+          onPickActive={(id, name) => {
+            setActiveFolderId(id)
+            setActiveFolderName(name)
+          }}
+          onSaveTo={(id) => void saveToLibrary(id)}
+          canSave={hasResult}
           onNotice={(m) => setAnnounce(m)}
           onLoad={(item) => {
             void (async () => {

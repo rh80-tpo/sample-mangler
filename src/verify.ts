@@ -256,7 +256,12 @@ async function run() {
   {
     log('=== file formats ===')
     log()
-    const native = (b: ArrayBuffer) => ctx.decodeAudioData(b)
+    // A context at the fixtures' own rate, so decodeAudioData does not
+    // resample and both decode paths land on the same sample grid. Without
+    // this the comparison silently stops running whenever the hardware rate
+    // differs from the files.
+    const fmtCtx = new AudioContext({ sampleRate: 48000 })
+    const native = (b: ArrayBuffer) => fmtCtx.decodeAudioData(b)
     const load = async (name: string) => {
       const res = await fetch(`/test-audio/formats/${name}`)
       return decodeAudio(await res.arrayBuffer(), native)
@@ -284,11 +289,24 @@ async function run() {
           pcm.channels[0].length > 0 && rmsOf(pcm) > 0.001,
           `${sec.toFixed(2)}s ${pcm.channels.length}ch ${(pcm.sampleRate / 1000).toFixed(1)}k`,
         )
-        // The uncompressed stereo formats must be sample-accurate against the
-        // wav. Lossy ones only have to be recognisably the same audio, and the
-        // mono fixture is a downmix, so its one channel is (L+R)/2 rather than
-        // L and comparing it here would be comparing different audio.
-        if (/aif|caf|wav/i.test(name) && pcm.channels.length === ref.channels.length) {
+        // Every format has to agree on how long the audio is, whatever rate it
+        // decoded at.
+        check(
+          `${name} duration matches`,
+          Math.abs(sec - durationOf(ref)) < 0.02,
+          `${sec.toFixed(3)}s vs ${durationOf(ref).toFixed(3)}s`,
+        )
+
+        // Sample-accurate comparison only means something at a matched rate.
+        // decodeAudioData resamples to the context, while our own parsers keep
+        // the file's native rate, so aiff at 48k against a wav resampled to
+        // 44.1k would compare two different sample grids. The app never hits
+        // this: it opens the context at the sniffed rate before decoding.
+        const comparable =
+          /aif|caf|wav/i.test(name) &&
+          pcm.channels.length === ref.channels.length &&
+          pcm.sampleRate === ref.sampleRate
+        if (comparable) {
           const sim = similarity(ref, pcm)
           check(
             `${name} matches the wav`,
@@ -305,6 +323,7 @@ async function run() {
         emptyReason = e instanceof DecodeError ? e.reason : 'other'
       }
       check('empty file is reported as empty', emptyReason === 'empty', emptyReason)
+      void fmtCtx.close()
     } catch (e) {
       log(
         `  <span class="bad">could not run: ${e instanceof Error ? e.message : String(e)}</span>`,

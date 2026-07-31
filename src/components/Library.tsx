@@ -18,6 +18,13 @@ type Props = {
   revision: number
   onNotice: (message: string) => void
   onLoad: (item: Item) => void
+  /** Which folder SAVE currently drops into. */
+  activeId: string | null
+  onPickActive: (id: string, name: string) => void
+  /** Save the current output straight into a specific folder. */
+  onSaveTo: (id: string) => void
+  /** True when there is something to save. */
+  canSave: boolean
 }
 
 function download(blob: Blob, name: string) {
@@ -39,7 +46,17 @@ function fmtBytes(n: number): string {
   return n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.round(n / 1024)}KB`
 }
 
-export function Library({ open, onToggle, revision, onNotice, onLoad }: Props) {
+export function Library({
+  open,
+  onToggle,
+  revision,
+  onNotice,
+  onLoad,
+  activeId,
+  onPickActive,
+  onSaveTo,
+  canSave,
+}: Props) {
   const [folders, setFolders] = useState<Folder[]>([])
   const [items, setItems] = useState<Record<string, Item[]>>({})
   const [busy, setBusy] = useState(false)
@@ -50,7 +67,11 @@ export function Library({ open, onToggle, revision, onNotice, onLoad }: Props) {
     const map: Record<string, Item[]> = {}
     for (const f of fs) map[f.id] = await listItems(f.id)
     setItems(map)
-  }, [])
+    // Something always has to be the destination, or SAVE has nowhere to go.
+    if (fs.length && !fs.some((f) => f.id === activeId)) {
+      onPickActive(fs[0].id, fs[0].name)
+    }
+  }, [activeId, onPickActive])
 
   useEffect(() => {
     void refresh()
@@ -133,8 +154,10 @@ export function Library({ open, onToggle, revision, onNotice, onLoad }: Props) {
             onClick={() => {
               void (async () => {
                 const f = await createFolder(`folder ${folders.length + 1}`)
+                // A folder you just made is the one you want to fill.
+                onPickActive(f.id, f.name)
                 await refresh()
-                onNotice(`made ${f.name}.`)
+                onNotice(`made ${f.name}. saves go here now.`)
               })()
             }}
           >
@@ -160,8 +183,26 @@ export function Library({ open, onToggle, revision, onNotice, onLoad }: Props) {
           folders.map((f) => {
             const list = items[f.id] ?? []
             return (
-              <div className="fold" key={f.id}>
+              <div
+                className={`fold${activeId === f.id ? ' fold--active' : ''}`}
+                key={f.id}
+              >
                 <div className="fold__head">
+                  {/* Marks where SAVE will drop things. A radio rather than a
+                      button, because exactly one folder is the destination. */}
+                  <button
+                    type="button"
+                    className="fold__target"
+                    role="radio"
+                    aria-checked={activeId === f.id}
+                    onClick={() => onPickActive(f.id, f.name)}
+                  >
+                    <span className="sr-only">
+                      {activeId === f.id
+                        ? `${f.name} is where save goes`
+                        : `Send saves to ${f.name}`}
+                    </span>
+                  </button>
                   <input
                     className="fold__name"
                     value={f.name}
@@ -171,10 +212,19 @@ export function Library({ open, onToggle, revision, onNotice, onLoad }: Props) {
                       setFolders((prev) =>
                         prev.map((x) => (x.id === f.id ? { ...x, name } : x)),
                       )
+                      if (activeId === f.id) onPickActive(f.id, name)
                     }}
                     onBlur={(e) => void renameFolder(f.id, e.target.value)}
                   />
                   <span className="fold__count">{list.length}</span>
+                  <button
+                    type="button"
+                    className="lib__act lib__act--strong"
+                    disabled={busy || !canSave}
+                    onClick={() => onSaveTo(f.id)}
+                  >
+                    save here
+                  </button>
                   <button
                     type="button"
                     className="lib__act"
