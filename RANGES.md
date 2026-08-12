@@ -57,3 +57,23 @@ other and drop into a session at a known gain.
 Near-silent output is left alone rather than normalised, because amplifying
 silence just turns the noise floor into the result. That case is detected and
 reported instead.
+
+## The vocal chopper
+
+Different job, so different reasoning. The mangler picks values for you; here
+you pick them, and the ranges only have to make the useful part of each dial
+easy to land on.
+
+| Control | Range | Why |
+| --- | --- | --- |
+| tempo | 90 to 174 as presets, any value typed | The presets are the tempos dance music actually sits at. 120 and 128 for house, 140 and 150 for trap and dubstep halftime, 174 for drum and bass. |
+| pattern | 6 arrangements over 4 phrases | AAAB first because a repeat with a variation at the end is the default shape of a vocal hook. AAAA is included so you can get a flat loop with no fill. |
+| length | 4, 8 or 16 bars | The pattern always covers four phrases, so length is really bars-per-phrase: 1, 2 or 4. 4 bars gives you the same AAAB shape short enough to drop in whole. |
+| density | 0 to 1, default 0.55 | Chance of a hit, multiplied by the rhythmic weight of the grid position. 0.55 fills the downbeats and backbeats and leaves most sixteenths empty, which reads as a groove. Above about 0.8 it stops being a chop and becomes a wash. |
+| variation | 0 to 1, default 0.6 | How far the non-A phrases depart, and how much extra gets pushed into their back half. 0.6 makes B read as a fill rather than as a different loop. |
+| hold | 0 to 1, default 0.25 | Two limits at once, because either alone does nothing. It widens the slot a slice may occupy (up to 6x) *and* lets the slice read past its own transient into the rest of the take (up to the end of the file). A chop is normally shorter than its slot, so widening the slot on its own is a no-op — that was a real bug. 0.25 keeps syllables mostly intact; 1 gives held, overlapping vowels. |
+| grid | 1/8 or 1/16 | Sixteenths for syllabic chopping, eighths when the vocal is slower than the grid and sixteenths just double-trigger. |
+
+The rack applies to the finished loop, not to the vocal going in, so the chop
+is built dry and then treated. That is the order you would work in by hand,
+and it means changing an effect does not re-roll the rhythm.
