@@ -322,6 +322,16 @@ export function Chopper() {
     return renderKick(rendered.sampleRate, durationOf(rendered), bpm, sidechain.rate)
   }, [kickAudible, rendered, bpm, sidechain.rate])
 
+  // Consume what resumeAfterEdit parked. Keyed on the finished output, so a duck
+  // or a trim is picked up even though the chop itself did not change. Without
+  // this the commit callback sets a ref nobody reads.
+  useEffect(() => {
+    const at = resumeAt.current
+    if (at == null || !output) return
+    resumeAt.current = null
+    void playback.play(output, at, { loop, kick })
+  }, [output, playback, loop, kick])
+
   // Rebuild when a control moves, but only once something exists.
   const first = useRef(true)
   useEffect(() => {
@@ -351,7 +361,10 @@ export function Chopper() {
     }
     await playback.play(current, cursor, { loop, kick })
     setPlaying(true)
-  }, [current, playback, loop, cursor])
+    // `kick` belongs here. Without it this callback keeps the reference kick it
+    // closed over on first render, which is null, and the toggle silently does
+    // nothing — the same stale-closure trap phraseBars fell into.
+  }, [current, playback, loop, cursor, kick])
 
   /** Click anywhere on a panel to play that panel from that point. */
   const seekTo = useCallback(
