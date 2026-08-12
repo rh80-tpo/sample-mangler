@@ -60,13 +60,26 @@ type Props = {
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
+/**
+ * Tints for telling one chop from the next.
+ *
+ * Four, not six, and separated by *lightness* rather than by hue. The first
+ * version of this varied hue across a warm band at roughly constant lightness,
+ * which looked good and failed the job: simulated against deuteranopia, two of
+ * the six tints came out 0.003 apart in luminance — the same colour. Ordering
+ * them by lightness instead gives 0.163 separation in normal vision and holds
+ * up in greyscale, and four well-spaced tints tell neighbours apart better than
+ * six that blur together.
+ *
+ * Colour is still only the enhancement here. The boundary ticks below carry the
+ * same information without relying on colour vision at all, because for
+ * protanopia even this ladder converges at the pale end.
+ */
 const CHOP_TINTS = [
-  'hsl(10 92% 56%)',
-  'hsl(30 90% 58%)',
-  'hsl(45 84% 60%)',
-  'hsl(2 76% 63%)',
-  'hsl(19 72% 47%)',
-  'hsl(37 66% 45%)',
+  'hsl(8 90% 34%)',
+  'hsl(22 86% 50%)',
+  'hsl(36 84% 66%)',
+  'hsl(48 82% 82%)',
 ]
 
 const COL = 3
@@ -234,6 +247,30 @@ export function Waveform({
     const resolved = Math.min(headIndex, n)
     drawEnvelope(0, Math.min(playIndex, resolved), 1)
     drawEnvelope(Math.min(playIndex, resolved), resolved, 0.42)
+
+    // Where each chop starts, marked without colour.
+    //
+    // The tints alone cannot carry this: even ordered by lightness they
+    // converge at the pale end under protanopia, and a producer who cannot
+    // separate them loses the one thing the colour was added to show. A tick is
+    // legible to everyone, so the colour is decoration and this is the data.
+    if (voices && voices.length) {
+      ctx.globalAlpha = 0.9
+      ctx.strokeStyle = tone === 'mangled' ? v('--ink') : v('--ink-dim')
+      ctx.lineWidth = dpr
+      ctx.beginPath()
+      const tick = Math.max(4 * dpr, H * 0.09)
+      for (const voice of voices) {
+        const x = Math.round(voice.start * n) * COL + dpr
+        if (x < 0 || x > W) continue
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x, tick)
+        ctx.moveTo(x, H - tick)
+        ctx.lineTo(x, H)
+      }
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
 
     // Columns the sweep has not reached yet render as unresolved noise, so the
     // reveal reads as the sample being torn apart rather than a bar filling up.

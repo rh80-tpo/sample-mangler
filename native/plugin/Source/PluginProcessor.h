@@ -1,67 +1,111 @@
-// NEVER COMPILED. See ../../README.md.
-//
-// Sampler-shaped: a sample is loaded, the chain is rendered offline into a
-// buffer whenever a parameter changes, and MIDI triggers play that buffer.
-// Keeping the effects offline is what lets the plugin and the web tool produce
-// identical audio, which is the whole reason the DSP core is shared.
-
 #pragma once
 
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_audio_utils/juce_audio_utils.h>
 
-#include "hazen/dsp.hpp"
+#include "hazen/chop.hpp"
 
-class HazenManglerProcessor : public juce::AudioProcessor {
+/**
+ * HAZEN Sampler.
+ *
+ * A sampler, not a port of the web build's live graph — deliberately. The web
+ * tool renders the whole chain offline once and plays the result, which is what
+ * makes its preview and its export identical. A plugin that streamed the chain
+ * per block would produce different audio from the same settings, so this keeps
+ * the same shape: load a file, render it offline on a background thread, play
+ * the rendered buffer.
+ *
+ * That also means every parameter change queues a re-render rather than taking
+ * effect on the next sample. Renders are fast, but they are not instant, and the
+ * editor says when one is in flight.
+ */
+class HazenSamplerProcessor : public juce::AudioProcessor,
+                              private juce::Thread {
  public:
-  HazenManglerProcessor();
-  ~HazenManglerProcessor() override = default;
+  HazenSamplerProcessor();
+  ~HazenSamplerProcessor() override;
 
   void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-  void releaseResources() override {}
-  bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
+  void releaseResources() override;
+  bool isBusesLayoutSupported(const BusesLayout&) const override;
   void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
   juce::AudioProcessorEditor* createEditor() override;
   bool hasEditor() const override { return true; }
 
-  const juce::String getName() const override { return "HAZEN sample mangler"; }
+  const juce::String getName() const override { return "HAZEN Sampler"; }
   bool acceptsMidi() const override { return true; }
   bool producesMidi() const override { return false; }
+  bool isMidiEffect() const override { return false; }
   double getTailLengthSeconds() const override { return 0.0; }
 
   int getNumPrograms() override { return 1; }
   int getCurrentProgram() override { return 0; }
   void setCurrentProgram(int) override {}
-  const juce::String getProgramName(int) override { return {}; }
+  const juce::String getProgramName(int) override { return "default"; }
   void changeProgramName(int, const juce::String&) override {}
 
   void getStateInformation(juce::MemoryBlock&) override;
   void setStateInformation(const void*, int) override;
 
-  /// Load a sample from disk and render the chain over it.
+  /// Load a sample. Safe to call from the message thread; kicks a re-render.
   bool loadSample(const juce::File& file);
 
   juce::AudioProcessorValueTreeState params;
 
+  // --- editor-facing state ---------------------------------------------
+  juce::String sampleName() const;
+  bool hasSample() const;
+  bool isRendering() const { return rendering.load(); }
+  double renderedSeconds() const;
+  /// A copy of the rendered peaks for drawing, or empty if there is nothing yet.
+  std::vector<float> peaks(int columns) const;
+  /// 0 to 1 through the rendered buffer, or -1 when idle.
+  float playPosition() const;
+  juce::String status() const;
+
+  /// Ask for a re-render. Coalesced: many calls collapse into one pass.
+  void invalidate();
+
  private:
+  void run() override;  // the render thread
+  void renderNow();
+  void readParameters();
+
   static juce::AudioProcessorValueTreeState::ParameterLayout layout();
 
-  /// Re-render `source_` through the chain into `rendered_`.
-  ///
-  /// Runs off the audio thread. The audio thread only ever reads `rendered_`
-  /// through `ready_`, so a render in progress never tears playback.
-  void rebuild();
+  juce::AudioFormatManager formats;
 
-  juce::AudioBuffer<float> source_;
-  juce::AudioBuffer<float> rendered_;
-  std::atomic<bool> ready_{false};
+  // Guards `source` and `rendered`, both of which the audio thread reads.
+  mutable juce::CriticalSection audioLock;
+  hazen::Audio source;   ///< the loaded file, untouched
+  hazen::Audio rendered; ///< what actually plays
+  juce::String loadedName;
+  juce::String statusText{"drop a sample"};
 
-  double sampleRate_ = 44100.0;
-  /// -1 when idle, otherwise the read position in `rendered_`.
-  int playhead_ = -1;
+  std::atomic<bool> rendering{false};
+  std::atomic<bool> dirty{false};
 
-  hazen::Decimator decimateL_, decimateR_;
-  hazen::Reverb reverbL_, reverbR_;
+  // Settings snapshot, read on the message thread, used by the render thread.
+  hazen::MangleSettings mangle;
+  hazen::ChopSettings chopping;
+  int modeIndex = 0;   ///< 0 mangle, 1 chop
+  double barsWanted = 2.0;
+  float duckAmount = 0.0f;
+  int duckRate = 4;
+  float duckRelease = 0.45f;
+  float levelDb = 0.0f;
+  double hostBpm = 120.0;
 
-  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HazenManglerProcessor)
+  // --- playback --------------------------------------------------------
+  // A voice is just a position in the rendered buffer. One at a time: this is a
+  // loop player, and two copies of the same loop overlapping is never what you
+  // want.
+  std::atomic<bool> playing{false};
+  double playHead = 0.0;
+  bool syncToHost = false;
+  double lastHostPpq = -1.0;
+
+  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HazenSamplerProcessor)
 };

@@ -9,7 +9,16 @@
  * min-height the whole thing silently falls back to content sizing, which
  * lets the waveform rows balloon and push the rack off screen.
  */
+/* Grid columns are capped rather than left implicit.
+ *
+ * These containers only declared `grid-template-rows`, so the implicit column
+ * was `auto`, which resolves to max-content. One long metadata line — the
+ * "4.00S · MONO · C MAJ · 8B · ~156.6 BPM" readout — then set a floor that
+ * propagated all the way up and pushed the whole page 50px wider than a phone
+ * viewport. `minmax(0, 1fr)` lets the column shrink and the text wrap instead.
+ */
 .app {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 100dvh;
   display: grid;
   padding: clamp(var(--sp-4), 2.4vw, var(--sp-6));
@@ -91,6 +100,7 @@
 /* ---------------------------------------------------------------- shell */
 
 .shell {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 100dvh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -175,6 +185,7 @@
 /* ---------------------------------------------------------------- chopper */
 
 .chop {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   max-width: 1500px;
   width: 100%;
@@ -191,6 +202,10 @@
 
 .chopctl {
   display: grid;
+  /* Same trap as .chop and .stage: an implicit column resolves to max-content,
+     so an unwrapped row of tempo buttons set the width instead of the container
+     doing it. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4);
   border: var(--edge) solid var(--hairline);
@@ -259,6 +274,16 @@
   accent-color: var(--signal);
 }
 
+/* A range input renders about 16px tall, which is under the 24px minimum for a
+   touch target. On a touch device the track gets taller rather than the layout
+   getting looser, so it stays hittable with a thumb without costing height on a
+   desktop where a mouse is precise. */
+@media (pointer: coarse) {
+  .chopctl__slider input {
+    height: 28px;
+  }
+}
+
 .chopctl__slider b {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
@@ -314,6 +339,7 @@
 /* ---------------------------------------------------------------- stage */
 
 .stage {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(112px, 1fr) minmax(112px, 1fr);
@@ -329,6 +355,7 @@
 /* --------------------------------------------------------------- waveform */
 
 .wave {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -337,9 +364,11 @@
 
 .wave__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--sp-3);
+  min-width: 0;
   font-size: var(--step--2);
   letter-spacing: var(--tracking-mono);
   text-transform: uppercase;
@@ -360,6 +389,9 @@
 .wave__meta {
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
+  /* A flex item will not shrink below its min-content width unless told to, and
+     this line is the longest text on the page. */
+  min-width: 0;
 }
 
 /* Actions that belong to a panel rather than the transport. */
@@ -706,7 +738,15 @@
 .len__bars,
 .len__modes {
   display: flex;
+  flex-wrap: wrap;
   border: var(--edge) solid var(--hairline-strong);
+}
+
+/* Wrapped rows of options need their own separators back: the single outer
+   border reads as one strip only while the strip is one line. */
+.len__bars > * ,
+.len__modes > * {
+  border-top: 0;
 }
 
 .len__opt {
@@ -1618,4 +1658,11 @@
     margin-left: 0;
     text-align: left;
   }
+}
+
+/* Roll history, in the panel header next to the loop toggle. */
+.wave__rolls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
 }

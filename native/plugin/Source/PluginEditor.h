@@ -1,40 +1,73 @@
-// NEVER COMPILED. See ../../README.md.
-
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "PluginProcessor.h"
 
-class HazenManglerEditor : public juce::AudioProcessorEditor,
-                           public juce::FileDragAndDropTarget {
+/**
+ * The editor. Same palette and typographic register as the web build, so the
+ * two read as one product rather than as a port.
+ */
+class HazenSamplerEditor : public juce::AudioProcessorEditor,
+                           public juce::FileDragAndDropTarget,
+                           private juce::Timer {
  public:
-  explicit HazenManglerEditor(HazenManglerProcessor&);
-  ~HazenManglerEditor() override = default;
+  explicit HazenSamplerEditor(HazenSamplerProcessor&);
+  ~HazenSamplerEditor() override = default;
 
   void paint(juce::Graphics&) override;
   void resized() override;
 
-  bool isInterestedInFileDrag(const juce::StringArray& files) override;
-  void filesDropped(const juce::StringArray& files, int x, int y) override;
+  bool isInterestedInFileDrag(const juce::StringArray&) override;
+  void filesDropped(const juce::StringArray&, int, int) override;
 
  private:
-  using Attachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-  using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+  void timerCallback() override;
 
-  void addKnob(juce::Slider&, juce::Label&, const juce::String& id,
-               const juce::String& text, std::unique_ptr<Attachment>&);
+  using SliderAttach = juce::AudioProcessorValueTreeState::SliderAttachment;
+  using ButtonAttach = juce::AudioProcessorValueTreeState::ButtonAttachment;
+  using ComboAttach = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
-  HazenManglerProcessor& processor_;
+  /// A labelled rotary bound to one parameter.
+  struct Knob {
+    juce::Slider slider;
+    juce::Label label;
+    std::unique_ptr<SliderAttach> attach;
+  };
+  /// An on/off module header, so a whole effect can be bypassed like the rack.
+  struct Toggle {
+    juce::ToggleButton button;
+    std::unique_ptr<ButtonAttach> attach;
+  };
+  struct Choice {
+    juce::ComboBox box;
+    juce::Label label;
+    std::unique_ptr<ComboAttach> attach;
+  };
 
-  juce::Slider bits_, rate_, drive_, verbMix_, verbSize_;
-  juce::Label bitsLabel_, rateLabel_, driveLabel_, verbMixLabel_, verbSizeLabel_;
-  juce::ToggleButton reverse_{"reverse"};
-  juce::Label dropHint_;
+  void addKnob(Knob&, const juce::String& id, const juce::String& text);
+  void addToggle(Toggle&, const juce::String& id, const juce::String& text);
+  void addChoice(Choice&, const juce::String& id, const juce::String& text,
+                 const juce::StringArray& options);
+  void layoutRow(juce::Rectangle<int> area, const juce::String& title,
+                 std::vector<juce::Component*> items);
 
-  std::unique_ptr<Attachment> bitsAttach_, rateAttach_, driveAttach_,
-      verbMixAttach_, verbSizeAttach_;
-  std::unique_ptr<ButtonAttachment> reverseAttach_;
+  HazenSamplerProcessor& processor;
 
-  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HazenManglerEditor)
+  Choice mode, bars, pattern, length, cut, res, duckRate;
+  Toggle sync, reverseOn, chopOn, crushOn, pitchOn, driveOn, verbOn;
+  Knob segments, scatter, stutter, gate;
+  Knob bits, divisor, semitones, grain, drive, verbSize, verbMix;
+  Knob density, variation, hold;
+  Knob duck, duckRelease, level;
+
+  juce::TextButton loadButton{"load a sample"};
+  juce::Label title, statusLabel, hint;
+  std::unique_ptr<juce::FileChooser> chooser;
+
+  std::vector<float> wave;
+  float playhead = -1.0f;
+  juce::Rectangle<int> waveArea;
+
+  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HazenSamplerEditor)
 };

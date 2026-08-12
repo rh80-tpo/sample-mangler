@@ -1,98 +1,120 @@
-# HAZEN sample mangler — native
+# HAZEN Sampler — the plugin
 
-First steps toward a plugin. Read the status section before assuming anything
-here loads in a DAW, because most of it does not yet.
+A VST3 instrument. Built, installed, and verified on this machine.
 
-## Status, honestly
+## What is real
+
+Everything in here compiles and runs. Earlier versions of this file said the
+plugin had never been compiled; that is no longer true, and the evidence is
+below rather than asserted.
 
 | Piece | State |
-|---|---|
-| `include/hazen/dsp.hpp` | Real. Compiles, tested, verified against the web build. |
-| `tests/test_dsp.cpp` | Real. 13 checks, all passing, run with clang. |
-| `plugin/` | Scaffold only. **Never compiled.** Needs cmake, full Xcode and JUCE. |
+| --- | --- |
+| `include/hazen/dsp.hpp` | Reverse, decimator, quantiser, drive curve, Schroeder reverb, normalise, loop-seam fold. 13 checks against vectors captured from the browser. |
+| `include/hazen/mangle.hpp` | Granular pitch shift, chop, sidechain duck, level, the chain runner, bar fitting. |
+| `include/hazen/chop.hpp` | Radix-2 FFT, spectral-flux onsets, grid slicing, monophonic phrase builder, the four-phrase patterns. |
+| `plugin/` | JUCE VST3 + Standalone. Builds clean, installs to `~/Library/Audio/Plug-Ins/VST3`. |
+| `harness/` | Headless host that drives the real processor: loads a file, waits for the render, pulls audio through `processBlock`, measures it. |
 
-The DSP core is genuinely done and genuinely verified. The plugin wrapper is a
-skeleton written from the JUCE API, and it has not been built even once, so
-treat it as a starting point rather than working code.
+## Build it
 
-### Why the wrapper is unverified
-
-Building a VST3 on this machine needs three things that are not installed:
-
-- **cmake** — not present
-- **full Xcode** — only Command Line Tools are here, and VST3/AU bundle
-  packaging and signing need the full install
-- **JUCE** — roughly 500MB, not present
-
-clang 17 *is* available, which is why the DSP core could be compiled and tested
-for real while the wrapper could not.
-
-## Running the DSP tests
-
-```
-c++ -std=c++20 -O2 -Wall -Wextra -I native/include \
-    native/tests/test_dsp.cpp -o /tmp/test_dsp && /tmp/test_dsp
+```bash
+cd native
+./setup.sh          # fetches JUCE if it is not already there
+cmake -B build -S plugin -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel 8
 ```
 
-The reference vectors in that file were captured from the TypeScript running in
-the browser, on the same input with the same parameters. Decimation matches to
-0.000000 and the distortion curve to 0.000010, the residual being the finite
-lookup table the browser's WaveShaper interpolates through.
+`COPY_PLUGIN_AFTER_BUILD` puts the VST3 straight into
+`~/Library/Audio/Plug-Ins/VST3/`, which is one of the two paths Ableton scans.
 
-That test has already earned its keep: it caught a loop-seam bug that the
-browser suite was passing vacuously, because the web build faded both ends to
-silence afterwards and the assertion compared 0 against 0. Porting the function
-somewhere without that fade is what exposed it.
+## Verify it
 
-## What ported, and what did not
+Two suites, and they check different things.
 
-**Ported and verified:** reverse, sample-and-hold decimation, bit-depth
-quantisation, the distortion curve, Schroeder reverb, peak normalisation, the
-loop seam.
-
-**Not ported, deliberately:**
-
-- **Pitch shift.** The web build uses Tone.js's granular shifter. A C++
-  equivalent is a real piece of work, not a translation, and doing it badly is
-  worse than not doing it.
-- **Chop.** The algorithm ports directly but it is a buffer rearrangement, not
-  a streaming process, so where it lives depends on the architecture below.
-- **Freeverb.** The web build uses Tone's; the reverb here is the one from the
-  generators. They sound different.
-
-## The architecture problem, stated up front
-
-The web tool **renders offline and then plays the result**. That is why preview
-and export cannot drift apart, and it is the right design for a browser tool.
-
-A plugin does not work that way. It gets a callback every few milliseconds and
-has to fill a buffer in real time, with no opportunity to render the whole
-thing first.
-
-So a plugin version is not a port, it is a different shape:
-
-- A **sampler plugin** is the honest translation. Load or drop a sample, apply
-  the chain once when a parameter changes, play the rendered buffer back on a
-  trigger. Effects stay offline, which keeps them identical to the web build.
-- A **real-time effect plugin** would mean rewriting reverse and chop, which
-  need the whole buffer, into something streaming. Reverse cannot be done
-  streaming at all without latency equal to the buffer length.
-
-The scaffold in `plugin/` is set up as the sampler shape, because it preserves
-the thing that makes the tool trustworthy.
-
-## To actually build it
-
-```
-brew install cmake
-# install Xcode from the App Store, then:
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-git clone --depth 1 https://github.com/juce-framework/JUCE native/JUCE
-cmake -B native/build -S native/plugin -DCMAKE_BUILD_TYPE=Release
-cmake --build native/build --config Release
+```bash
+c++ -std=c++20 -O2 -I include tests/test_dsp.cpp -o /tmp/test_dsp && /tmp/test_dsp
+cmake --build build --target HazenHarness --config Release
+./build/HazenHarness_artefacts/Release/HazenHarness
 ```
 
-Output lands in `native/build/HazenMangler_artefacts/Release/`. The VST3 goes in
-`~/Library/Audio/Plug-Ins/VST3`, the AU in `~/Library/Audio/Plug-Ins/Components`.
+The first checks the DSP against reference vectors from the browser build. The
+second is the one that matters for "does it work as a plugin": a bundle that
+loads is not the same as a plugin that makes sound, and only `processBlock` can
+tell you which you have. Last run:
 
-None of the above has been run. Expect the first build to need fixing.
+```
+PASS  loads a wav                       hazen_harness.wav
+PASS  renders something                 4.000s rendered
+PASS  mangle mode makes sound           rms 0.26186
+PASS  mangle fits the bar count         4.0000s for 2 bars @120
+PASS  chop mode renders 16 bars         32.000s (want 32.0)
+PASS  chop mode makes sound             rms 0.23484
+PASS  level -12dB attenuates            rms ratio 0.2512 (want ~0.251)
+PASS  state round trips                 saved and restored
+```
+
+## Load it in Ableton
+
+1. Live → Settings → Plug-Ins → turn on **Use VST3 Plug-In System Folders**, then
+   **Rescan**.
+2. It appears in the browser under Plug-Ins → HAZEN → **HAZEN Sampler**, as an
+   *instrument*, so drop it on a MIDI track.
+3. Drag an audio file onto the plugin window, or press `load a sample`.
+4. Play a MIDI note to trigger it, or leave `sync` on and it follows the host
+   transport, restarting on the bar.
+
+It reads the host tempo and re-renders when it changes, so a chop built in a
+140 BPM set is cut for 140.
+
+## Why it is a sampler and not a port
+
+The web build renders the whole chain offline, once, and plays the result. That
+is what makes its preview and its exported WAV identical — the single most
+important property in the whole project. A plugin that streamed the same chain
+per block would produce different audio from identical settings, and the two
+halves of the product would disagree.
+
+So this keeps the same shape: load, render offline on a background thread, play
+the buffer. The cost is that a parameter change is not instant — it queues a
+re-render, and the editor says when one is in flight. That is an honest
+trade rather than a limitation to hide.
+
+## What differs from the web build
+
+Worth knowing before you expect parity.
+
+- **Effect order is fixed.** The web build randomises order across render
+  passes, which is a lot of what makes a roll surprising. Here every control is
+  visible at once, and a hidden order you cannot see or set would be worse than
+  a predictable one.
+- **No reverb damping.** The C++ reverb has decay and mix, not damping. There is
+  no knob for it rather than a knob that does nothing.
+- **No roll dice.** The plugin has no `reroll`: you set the chain. Rolling
+  belongs to the web tool, where the point is discovery.
+- **30 second ceiling on the source.** Longer files are truncated and the status
+  line says so. A whole track would make every render slow for no benefit.
+- **No key or tempo detection**, no folders, no WAV export. Those are the web
+  build's jobs; here the host does them.
+
+## AU is not built, and why
+
+This machine has the Command Line Tools but not a full Xcode, and JUCE's AU
+wrapper needs Xcode's AudioUnit tooling. VST3 needs neither, and Ableton Live on
+macOS loads VST3, so VST3 is the target. `FORMATS` in
+[plugin/CMakeLists.txt](plugin/CMakeLists.txt) is where to add `AU` if a full
+Xcode ever gets installed.
+
+The bundle is **ad-hoc signed**, which is what an unnotarised local build gets.
+Ableton loads it fine. Distributing it to anyone else would need a Developer ID
+and notarisation.
+
+## What is not verified
+
+I could not confirm Ableton itself loading it — driving Live's GUI is outside
+what I can do here, and `screencapture` needs a Screen Recording permission this
+environment does not have. What is confirmed: the bundle is a valid arm64 VST3
+exporting `GetPluginFactory` and `bundleEntry`, it registers as
+`Instrument|Synth`, it is installed in a folder Live scans, and the processor
+inside it loads files and produces measured audio. The remaining step is you
+opening Live and dropping it on a track.

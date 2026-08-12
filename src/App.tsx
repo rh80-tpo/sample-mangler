@@ -60,6 +60,19 @@ import './styles/app.css'
 
 type Result = { pcm: Pcm; seed: number }
 
+/**
+ * Past rolls, so rerolling stops being destructive.
+ *
+ * Chains, not audio. A chain is a few dozen bytes and rendering is
+ * deterministic, so stepping back re-renders the same result exactly; keeping
+ * the buffers instead would cost about 64MB an entry on a three minute sample
+ * and the heap check would rightly fail.
+ */
+type History = { rolls: ChainSpec[]; at: number }
+
+/** Enough to get back to a keeper, not enough to become a browser. */
+const HISTORY_MAX = 24
+
 /** Renders in flight are coalesced, so a fast drag never queues up work. */
 type RenderQueue = {
   running: boolean
@@ -132,6 +145,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
   const [fileName, setFileName] = useState('')
   const [result, setResult] = useState<Result | null>(null)
   const [chain, setChain] = useState<ChainSpec | null>(null)
+  const [history, setHistory] = useState<History>({ rolls: [], at: -1 })
   const [edited, setEdited] = useState(false)
   const [tweaking, setTweaking] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -424,6 +438,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
     setFileName('')
     setResult(null)
     setChain(null)
+    setHistory({ rolls: [], at: -1 })
     setEdited(false)
     setError('')
     setCursor(0)
@@ -606,9 +621,33 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       setChain(next)
       setEdited(true)
       setError('')
+      // Overwrite the current entry rather than adding one. A knob drag is not
+      // a new roll, but stepping away and back should still return the sound
+      // you had rather than the one you rolled.
+      setHistory((h) =>
+        h.at < 0
+          ? h
+          : { ...h, rolls: h.rolls.map((r, i) => (i === h.at ? next : r)) },
+      )
       void runRender(next)
     },
     [runRender],
+  )
+
+  /** Step through past rolls. Re-renders, so it costs a render not a buffer. */
+  const stepRoll = useCallback(
+    (delta: number) => {
+      const at = history.at + delta
+      if (at < 0 || at >= history.rolls.length) return
+      const past = history.rolls[at]
+      setHistory((h) => ({ ...h, at }))
+      setChain(past)
+      setEdited(false)
+      setError('')
+      setAnnounce(`Roll ${at + 1} of ${history.rolls.length}.`)
+      void runRender(past)
+    },
+    [history, runRender],
   )
 
   /** Length changes re-render the same chain rather than rolling a new one. */
@@ -674,6 +713,12 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       rollCount.current += 1
       setResult({ pcm, seed })
       setChain(rolled)
+      setHistory((h) => {
+        // Rolling after stepping back drops the rolls you had stepped past,
+        // the way an editor drops the redo stack once you type.
+        const kept = [...h.rolls.slice(0, h.at + 1), rolled].slice(-HISTORY_MAX)
+        return { rolls: kept, at: kept.length - 1 }
+      })
       setEdited(false)
       // A new roll is a different length, so a cursor from the last one no
       // longer points at anything meaningful.
@@ -1046,7 +1091,36 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
                 }
                 tools={
                   result ? (
-                    <LoopToggle on={loop} onToggle={toggleLoop} label="mangled" />
+                    <>
+                      <LoopToggle on={loop} onToggle={toggleLoop} label="mangled" />
+                      {history.rolls.length > 1 ? (
+                        <span className="wave__rolls">
+                          <button
+                            type="button"
+                            className="wave__btn"
+                            onClick={() => stepRoll(-1)}
+                            disabled={history.at <= 0 || busy || tweaking}
+                            title="Back to the previous roll"
+                          >
+                            ‹
+                          </button>
+                          <span className="wave__tag">
+                            roll {history.at + 1}/{history.rolls.length}
+                          </span>
+                          <button
+                            type="button"
+                            className="wave__btn"
+                            onClick={() => stepRoll(1)}
+                            disabled={
+                              history.at >= history.rolls.length - 1 || busy || tweaking
+                            }
+                            title="Forward to the next roll"
+                          >
+                            ›
+                          </button>
+                        </span>
+                      ) : null}
+                    </>
                   ) : null
                 }
               />

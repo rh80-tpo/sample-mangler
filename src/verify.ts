@@ -307,6 +307,53 @@ async function run() {
     log()
   }
 
+  // --- determinism ------------------------------------------------------
+  // Roll history stores chains, not audio, and re-renders when you step back.
+  // That is only honest if the same chain gives back the same sound, so this
+  // measures it per effect rather than asserting one global tolerance — the
+  // answer turned out to be different for different effects, and an aggregate
+  // number hid which.
+  {
+    log('=== rendering is deterministic ===')
+    log()
+    const original = await loadFixture(ctx, 'drums.wav')
+    const only = (spec: EffectSpec): ChainSpec => ({ seed: 5, effects: [spec] })
+    const cases: { name: string; chain: ChainSpec }[] = [
+      { name: 'reverse', chain: only({ id: 'reverse', enabled: true }) },
+      { name: 'chop', chain: only({ id: 'chop', enabled: true, segments: 12, reorder: 0.5, repeat: 0.3, gate: 0.2 }) },
+      { name: 'bitcrush', chain: only({ id: 'bitcrush', enabled: true, bits: 6, divisor: 6 }) },
+      { name: 'drive', chain: only({ id: 'drive', enabled: true, amount: 0.6, oversample: '2x' }) },
+      { name: 'reverb', chain: only({ id: 'reverb', enabled: true, size: 0.7, damp: 4000, mix: 0.5 }) },
+      { name: 'pitch', chain: only({ id: 'pitch', enabled: true, semitones: -5, windowSize: 0.06 }) },
+    ]
+
+    let worstName = ''
+    let worstDelta = 0
+    for (const c of cases) {
+      const a = await renderChain(original, c.chain, { bars: 2, mode: 'trim' })
+      const b = await renderChain(original, c.chain, { bars: 2, mode: 'trim' })
+      const sameLength = a.pcm.channels[0].length === b.pcm.channels[0].length
+      const { diff } = maxDiff(a.pcm, b.pcm)
+      if (diff > worstDelta) {
+        worstDelta = diff
+        worstName = c.name
+      }
+      // Every effect must at least land in the same place with the same length,
+      // and be far below audibility. -100 dBFS is roughly 1e-5.
+      check(
+        `${c.name} reproduces`,
+        sameLength && diff < 1e-5,
+        `max |delta| ${diff.toExponential(2)}${sameLength ? '' : ' · LENGTH DIFFERS'}`,
+      )
+    }
+    log(
+      `  worst drift: ${worstName} at ${worstDelta.toExponential(2)} (${(
+        20 * Math.log10(Math.max(worstDelta, 1e-12))
+      ).toFixed(0)} dBFS)`,
+    )
+    log()
+  }
+
   // --- output level -----------------------------------------------------
   // There was no volume control at all for the first nine versions, and nothing
   // here noticed. These checks exist so that cannot recur quietly: the level has
