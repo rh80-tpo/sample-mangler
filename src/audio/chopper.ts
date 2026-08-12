@@ -26,6 +26,25 @@ export const PATTERNS: { id: Pattern; label: string; hint: string }[] = [
   { id: 'ABCB', label: 'ABCB', hint: 'builds, then settles back' },
 ]
 
+/**
+ * Where the source gets cut.
+ *
+ * `transient` cuts on detected onsets, which follows the delivery — slices
+ * start on consonants and are all different lengths. A number cuts on a grid
+ * instead, that many divisions per bar, so every slice is exactly one slot long
+ * and the rhythm is dead tight rather than sung.
+ */
+export type Quantize = 'transient' | 1 | 2 | 4 | 8 | 16
+
+export const QUANTIZE_CHOICES: { id: Quantize; label: string; hint: string }[] = [
+  { id: 'transient', label: 'transients', hint: 'cut on the consonants, as sung' },
+  { id: 1, label: '1/1', hint: 'one bar per slice' },
+  { id: 2, label: '1/2', hint: 'half notes' },
+  { id: 4, label: '1/4', hint: 'quarter notes' },
+  { id: 8, label: '1/8', hint: 'eighth notes' },
+  { id: 16, label: '1/16', hint: 'sixteenths, very choppy' },
+]
+
 export type ChopOptions = {
   bpm: number
   pattern: Pattern
@@ -53,6 +72,16 @@ export type ChopOptions = {
    * shorter than its grid slot, so extra room on its own changes nothing.
    */
   hold: number
+  /**
+   * Where to cut the source. See `Quantize`.
+   *
+   * Cut on the *chop's* tempo, not the vocal's own detected tempo. That is the
+   * deliberate choice: it makes every slice exactly one grid slot long, so the
+   * slices tile the output rhythm instead of almost fitting it. Cutting on the
+   * source's tempo would preserve how it was sung, which is what `transient`
+   * is already for.
+   */
+  quantize: Quantize
 }
 
 export const DEFAULT_CHOP: Omit<ChopOptions, 'seed'> = {
@@ -64,6 +93,7 @@ export const DEFAULT_CHOP: Omit<ChopOptions, 'seed'> = {
   inOrder: false,
   phraseBars: 4,
   hold: 0.25,
+  quantize: 'transient',
 }
 
 const WIN = 1024
@@ -148,6 +178,48 @@ export function slicesFromOnsets(pcm: Pcm, onsets: number[]): Slice[] {
     if (end - start > pcm.sampleRate * 0.03) out.push({ start, end })
   }
   return out.length ? out : [{ start: 0, end: total }]
+}
+
+/**
+ * Cut the source on a grid instead of on its transients.
+ *
+ * Only whole slices are kept, so every one is exactly the same length and lands
+ * on a grid multiple — a trailing part-slice would be the one piece that did not
+ * fit the rhythm.
+ *
+ * Near-silent slices are dropped. With transients that never happens, because a
+ * slice starts where energy appeared; on a grid, a chunk can land in a gap
+ * between phrases, and offering silence as chop material just puts holes in the
+ * loop. Dropping them keeps every remaining slice on the grid.
+ */
+export function slicesFromGrid(pcm: Pcm, bpm: number, perBar: number): Slice[] {
+  const total = pcm.channels[0].length
+  const secPerBar = (60 / bpm) * 4
+  const len = Math.max(1, Math.round((secPerBar / perBar) * pcm.sampleRate))
+  const whole: Slice[] = []
+  for (let start = 0; start + len <= total; start += len) {
+    whole.push({ start, end: start + len })
+  }
+  if (!whole.length) return [{ start: 0, end: total }]
+
+  const level = (sl: Slice) => {
+    let sum = 0
+    let n = 0
+    for (const ch of pcm.channels) {
+      for (let i = sl.start; i < sl.end; i += 4) {
+        sum += ch[i] * ch[i]
+        n++
+      }
+    }
+    return n ? Math.sqrt(sum / n) : 0
+  }
+  const levels = whole.map(level)
+  const loudest = Math.max(...levels)
+  // A twentieth of the loudest slice: quiet enough to keep a soft tail, low
+  // enough to reject a gap.
+  const floor = loudest * 0.05
+  const kept = whole.filter((_, i) => levels[i] > floor)
+  return kept.length ? kept : whole
 }
 
 /**
@@ -245,8 +317,13 @@ export type ChopResult = {
  */
 export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
   const rng = mulberry32(options.seed)
-  const onsets = detectOnsets(pcm)
-  const slices = slicesFromOnsets(pcm, onsets)
+  // Onset detection is an FFT over the whole file, so it is skipped entirely
+  // when the cuts are coming from the grid instead.
+  const onsets = options.quantize === 'transient' ? detectOnsets(pcm) : []
+  const slices =
+    options.quantize === 'transient'
+      ? slicesFromOnsets(pcm, onsets)
+      : slicesFromGrid(pcm, options.bpm, options.quantize)
 
   const sr = pcm.sampleRate
   const total = pcm.channels[0].length

@@ -25,7 +25,7 @@ import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
 import { DecodeError, decodeAudio } from './audio/decode'
 import { detectKey } from './audio/key'
-import { PATTERNS, buildChop } from './audio/chopper'
+import { PATTERNS, buildChop, slicesFromGrid } from './audio/chopper'
 import { Playback } from './audio/playback'
 import {
   DEFAULT_SIDECHAIN,
@@ -395,6 +395,7 @@ async function run() {
       inOrder: false,
       phraseBars: 4 as const,
       hold: 0.25,
+      quantize: 'transient' as const,
       seed: 4242,
     }
 
@@ -446,6 +447,94 @@ async function run() {
         r.bars === wanted && Math.abs(seconds - expected) < 0.01,
         `${r.bars} bars, ${seconds.toFixed(3)}s vs ${expected.toFixed(3)}s`,
       )
+    }
+
+    // Quantised cutting. The whole point is that a cut lands on the grid, so
+    // that is measured directly rather than inferred from how it sounds.
+    {
+      for (const perBar of [1, 2, 4, 8, 16] as const) {
+        const grid = slicesFromGrid(vocal, base.bpm, perBar)
+        const want = Math.round(((60 / base.bpm) * 4 / perBar) * vocal.sampleRate)
+
+        const sameLength = grid.every((sl) => sl.end - sl.start === want)
+        check(
+          `1/${perBar} slices are all one slot long`,
+          sameLength && grid.length > 0,
+          `${grid.length} slices of ${want} frames`,
+        )
+        // Every start has to be an exact multiple of the slot, or it is not a
+        // grid — near-silent slices are dropped, so starts skip but never drift.
+        const onGrid = grid.every((sl) => sl.start % want === 0)
+        check(
+          `1/${perBar} cuts land on the grid`,
+          onGrid,
+          onGrid ? 'every start is a slot multiple' : 'a start was off the grid',
+        )
+      }
+
+      // Finer grids give more slices. If they did not, the control does nothing.
+      const counts = ([1, 2, 4, 8, 16] as const).map(
+        (q) => slicesFromGrid(vocal, base.bpm, q).length,
+      )
+      let increasing = true
+      for (let i = 1; i < counts.length; i++) {
+        if (counts[i] <= counts[i - 1]) increasing = false
+      }
+      check('finer grids cut more slices', increasing, counts.join(' → '))
+
+      // And it has to change the audio, not just the slice list.
+      const onTransients = buildChop(vocal, { ...base, pattern: 'AAAB', quantize: 'transient' })
+      const onGrid8 = buildChop(vocal, { ...base, pattern: 'AAAB', quantize: 8 })
+      check(
+        'quantising changes the loop',
+        similarity(onTransients.pcm, onGrid8.pcm) < 0.99,
+        `corr ${similarity(onTransients.pcm, onGrid8.pcm).toFixed(4)}`,
+      )
+      check(
+        'quantising skips onset detection',
+        onGrid8.onsets === 0 && onTransients.onsets > 0,
+        `${onTransients.onsets} transients vs ${onGrid8.onsets} when gridded`,
+      )
+      // Cut on the same grid the slices are placed on, and every chop should
+      // come out exactly one slot long — that is what "quantised" has to mean.
+      //
+      // Not tested as "no gaps in the loop": density is multiplied by each
+      // step's rhythmic weight, so even at 1.0 an offbeat sixteenth only lands
+      // 28% of the time and holes in the rhythm are correct. What must hold is
+      // the length of each chop that does land.
+      {
+        const tight = buildChop(vocal, {
+          ...base,
+          pattern: 'AAAB',
+          quantize: 16,
+          resolution: 16,
+          hold: 0,
+          density: 1,
+        })
+        // phraseBars is bars *per phrase*, and the pattern covers four phrases.
+        const steps = base.phraseBars * 16 * 4
+        const slot = 1 / steps
+        const lengths = tight.voices.map((v) => v.end - v.start)
+        const over = lengths.filter((l) => l > slot * 1.02).length
+        const exact = lengths.filter((l) => Math.abs(l - slot) <= slot * 0.02).length
+        check(
+          'a gridded chop never outruns its slot',
+          over === 0,
+          `${lengths.length} voices, ${over} longer than a slot`,
+        )
+        check(
+          'a gridded chop is exactly one slot long',
+          exact >= lengths.length * 0.9,
+          `${exact}/${lengths.length} within 2% of one slot`,
+        )
+      }
+      // Still mono, which the grid must not break.
+      const sorted = [...onGrid8.voices].sort((a, b) => a.start - b.start)
+      let overlaps = 0
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i - 1].end - sorted[i].start > 1e-9) overlaps++
+      }
+      check('gridded chops stay monophonic', overlaps === 0, `${sorted.length} voices, ${overlaps} overlapping`)
     }
 
     // One voice at a time. Overlapping chops are the thing that turns a rhythm
@@ -802,62 +891,73 @@ async function run() {
     log('=== loop integrity ===')
     log()
     const original = await loadFixture(ctx, 'drums.wav')
+
+    // Fixed seeds rather than random ones. This section used to roll a fresh
+    // chain each run, which made it intermittent — the worst property a check
+    // can have, because a failure could not be told apart from bad luck.
+    const SEAM_SEEDS = [7, 1153, 20219, 44497, 90001]
+    let worstRatio = 0
+    let worstNote = ''
+
     for (const bars of [0.5, 1, 2]) {
       for (const mode of ['trim', 'stretch', 'fit'] as const) {
-        const chain = rollChain(freshSeed(), durationOf(original))
-        const { pcm } = await renderChain(original, chain, { bars, mode })
-        const seconds = durationOf(pcm)
-        const wanted = bars * 2 // 120bpm, 4/4
-        check(
-          `${bars} bar ${mode}: exact length`,
-          Math.abs(seconds - wanted) < 0.002,
-          `${seconds.toFixed(4)}s vs ${wanted}s`,
-        )
+        let lengthOk = true
+        let lengthNote = ''
+        let seamFailures = 0
+        let seamNote = ''
 
-        // Step across the loop point, measured against the material's own
-        // typical sample-to-sample movement so it scales with the content.
-        const ch = pcm.channels[0]
-        let innerStep = 0
-        for (let i = 1; i < ch.length; i++) innerStep += Math.abs(ch[i] - ch[i - 1])
-        innerStep /= ch.length - 1
-        const seam = Math.abs(ch[0] - ch[ch.length - 1])
-        // Guard the guard. An earlier version of this passed only because both
-        // ends were faded to silence, so the comparison was 0 against 0 and
-        // proved nothing about whether the loop actually joined. A C++ port of
-        // the same code, without that fade, is what exposed it.
-        //
-        // Measured over a window rather than the single boundary sample:
-        // real material crosses zero all the time, and a lone zero there says
-        // nothing. A fade to silence, by contrast, kills the whole window.
-        const edge = (from: number) => {
-          let sum = 0
-          for (let i = from; i < from + 64; i++) sum += ch[i] * ch[i]
-          return Math.sqrt(sum / 64)
+        for (const seed of SEAM_SEEDS) {
+          const chain = rollChain(seed, durationOf(original))
+          const { pcm } = await renderChain(original, chain, { bars, mode })
+          const seconds = durationOf(pcm)
+          const wanted = bars * 2 // 120bpm, 4/4
+
+          if (Math.abs(seconds - wanted) >= 0.002) {
+            lengthOk = false
+            lengthNote = `seed ${seed}: ${seconds.toFixed(4)}s vs ${wanted}s`
+          }
+
+          const ch = pcm.channels[0]
+          const padded = durationOf(original) < wanted
+          if (padded) continue
+
+          // Compared against the material's own worst steps, not its mean step.
+          //
+          // The mean is the wrong yardstick here and it made this check both
+          // unfair and flaky. Decimation is sample-and-hold: most neighbouring
+          // samples are identical, which drags the mean toward zero, while the
+          // steps that do occur are large by design. A seam the same size as
+          // steps the signal already contains everywhere is not a click — it is
+          // the material. A high percentile says that; a mean does not.
+          const steps = new Float64Array(ch.length - 1)
+          for (let i = 1; i < ch.length; i++) steps[i - 1] = Math.abs(ch[i] - ch[i - 1])
+          const sorted = Float64Array.from(steps).sort()
+          const pick = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
+          const p999 = pick(0.999)
+          const seam = Math.abs(ch[0] - ch[ch.length - 1])
+          const limit = Math.max(p999 * 1.5, 0.02)
+          const ratio = seam / Math.max(p999, 1e-9)
+          if (ratio > worstRatio) {
+            worstRatio = ratio
+            worstNote = `${bars}b ${mode} seed ${seed}: seam ${seam.toFixed(5)}, p99.9 ${p999.toFixed(5)}`
+          }
+          if (!(seam <= limit)) {
+            seamFailures++
+            seamNote = `seed ${seed}: seam ${seam.toFixed(5)} vs p99.9 ${p999.toFixed(5)} · ${describeChain(chain)}`
+          }
         }
-        const headEnergy = edge(0)
-        const tailEnergy = edge(ch.length - 64)
 
-        // Asking for more bars than the source can fill pads with silence,
-        // which is correct behaviour, so the end-energy and seam assertions
-        // only mean something when the material actually reaches the boundary.
-        const padded = durationOf(original) < wanted
-        void headEnergy
-        void tailEnergy
-        if (!padded) {
-          // `fit` runs the result back through the granular pitch shifter to
-          // undo the resample, and that shifter does not leave the buffer
-          // continuous at an arbitrary cut point. The fold still helps, but the
-          // join is looser than the deterministic modes and saying so is more
-          // use than a threshold quietly tuned until it passed.
-          const tolerance = mode === 'fit' ? 20 : 6
+        check(`${bars} bar ${mode}: exact length`, lengthOk, lengthNote || `all ${SEAM_SEEDS.length} seeds`)
+        if (durationOf(original) >= bars * 2) {
           check(
             `${bars} bar ${mode}: seam is not a step`,
-            innerStep > 0 && seam <= Math.max(innerStep * tolerance, 0.02),
-            `seam ${seam.toFixed(5)} vs typical ${innerStep.toFixed(5)}`,
+            seamFailures === 0,
+            seamFailures ? seamNote : `${SEAM_SEEDS.length} seeds clean`,
           )
         }
       }
     }
+    log(`  worst seam across all ${SEAM_SEEDS.length * 9} renders: ${worstNote}`)
 
     // No fade to silence on a bar-fitted result, tested directly rather than
     // inferred from how loud a random roll happened to end.

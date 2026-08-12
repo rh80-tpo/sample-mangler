@@ -45,6 +45,32 @@ chop guarantees real scatter and stutter.
 | drive | amount | 0.18 to 0.62, or 0.62 to 0.92 on a 25% "hard" branch | 0 to 1 | Past ~0.7 Tone.Distortion is mostly square wave; under ~0.15 it is inaudible. |
 | drive | alias | 2x or 4x 80% of the time, else none | none / 2x / 4x | Oversampling is on most of the time because the aliasing without it reads as a bug rather than a choice. It gets switched off deliberately, not by accident. |
 
+## Where the cuts land
+
+The chopper has two grids and they do different jobs. `resolution` decides where
+slices are *placed* in the output, and was always quantised. `cut` decides where
+the source is *sliced*, and until now was always the transients — which is why
+chops landed on whatever the singer happened to do rather than on the beat.
+
+| Choice | What it does |
+| --- | --- |
+| transients | Cut on detected onsets. Slices start on consonants and are all different lengths. Follows the delivery. |
+| 1/1 … 1/16 | Cut on a grid, that many divisions per bar. Every slice is exactly one slot long. |
+
+The grid is the **chop's** tempo, not the vocal's own detected tempo. That is a
+deliberate choice: it makes each slice exactly one output slot long, so slices
+tile the rhythm instead of almost fitting it. Cutting on the source's tempo would
+preserve how the line was sung, and `transients` already does that better.
+
+Near-silent grid slices are dropped. With transients that cannot happen, because
+a slice starts where energy appeared; on a grid a chunk can land in a gap between
+phrases, and offering silence as chop material just puts holes in the loop.
+Dropping them keeps every surviving slice on the grid — the starts skip, they
+never drift.
+
+Onset detection is skipped entirely when a grid is selected, since it is an FFT
+over the whole file and nothing reads the result.
+
 ## Sidechain
 
 There is no kick track in this tool, so the kick is the grid — the same tempo

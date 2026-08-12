@@ -21,9 +21,11 @@ import { encodeWav } from './audio/wav'
 import {
   DEFAULT_CHOP,
   PATTERNS,
+  QUANTIZE_CHOICES,
   buildChop,
   type ChopResult,
   type Pattern,
+  type Quantize,
 } from './audio/chopper'
 import { describeKey, detectKey } from './audio/key'
 import { describeDetected, detectTempo } from './audio/tempo'
@@ -74,6 +76,7 @@ export function Chopper() {
   const [inOrder, setInOrder] = useState(DEFAULT_CHOP.inOrder)
   const [phraseBars, setPhraseBars] = useState<1 | 2 | 4>(DEFAULT_CHOP.phraseBars)
   const [hold, setHold] = useState(DEFAULT_CHOP.hold)
+  const [quantize, setQuantize] = useState<Quantize>(DEFAULT_CHOP.quantize)
 
   /** Effects applied to the finished chop. Null until one is added. */
   const [chain, setChain] = useState<ChainSpec | null>(null)
@@ -209,6 +212,7 @@ export function Chopper() {
         inOrder,
         phraseBars,
         hold,
+        quantize,
         seed: freshSeed(),
       })
       setResult(built)
@@ -223,7 +227,7 @@ export function Chopper() {
     } finally {
       setBusy(false)
     }
-  }, [source, busy, playback, bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold])
+  }, [source, busy, playback, bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold, quantize])
 
   // --- the rack --------------------------------------------------------
   // Effects are applied to the finished chop rather than the vocal, so the
@@ -347,7 +351,7 @@ export function Chopper() {
     // updates the label and changes nothing, which is how phraseBars and hold
     // silently did nothing on first pass.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold])
+  }, [bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold, quantize])
 
   const current = target === 'vocal' ? source : (output ?? source)
 
@@ -467,7 +471,11 @@ export function Chopper() {
               label={`chop · ${pattern}`}
               summary={
                 result
-                  ? `${result.bars} bars · ${fmt(durationOf(output ?? result.pcm))} · ${result.slices} slices from ${result.onsets} transients${processed ? ' · racked' : ''}`
+                  ? `${result.bars} bars · ${fmt(durationOf(output ?? result.pcm))} · ${result.slices} slices ${
+                      quantize === 'transient'
+                        ? `from ${result.onsets} transients`
+                        : `on the ${QUANTIZE_CHOICES.find((q) => q.id === quantize)?.label} grid`
+                    }${processed ? ' · racked' : ''}`
                   : 'not yet'
               }
               tempo={result ? `${bpm} bpm · ${result.bars} bars` : null}
@@ -503,8 +511,9 @@ export function Chopper() {
             <div className="drop__inner">
               <p className="drop__head">drop a vocal</p>
               <p className="drop__sub">
-                it finds the transients, cuts on them, and builds a 16 bar loop
-                from a 4 bar phrase. pick the pattern and the tempo.
+                it cuts the vocal up — on the transients, or straight on the
+                beat — and builds a 16 bar loop from a 4 bar phrase. pick the
+                pattern and the tempo.
               </p>
               {stage ? (
                 <p className="drop__stage" role="status">
@@ -600,6 +609,30 @@ export function Chopper() {
           </div>
           <span className="chopctl__hint">
             {phraseBars * 4} bars total, {phraseBars} per phrase
+          </span>
+        </div>
+
+        <div className="chopctl__row">
+          <span className="chopctl__title">cut</span>
+          {/* Where the source is sliced, as opposed to where slices are placed.
+              Transients follow the delivery; a grid ignores it and cuts on the
+              beat, which is the point — every slice comes out one slot long. */}
+          <div className="len__bars" role="group" aria-label="Cut points">
+            {QUANTIZE_CHOICES.map((q) => (
+              <button
+                key={String(q.id)}
+                type="button"
+                className="len__opt"
+                aria-pressed={quantize === q.id}
+                title={q.hint}
+                onClick={() => setQuantize(q.id)}
+              >
+                {q.label}
+              </button>
+            ))}
+          </div>
+          <span className="chopctl__hint">
+            {QUANTIZE_CHOICES.find((q) => q.id === quantize)?.hint}
           </span>
         </div>
 

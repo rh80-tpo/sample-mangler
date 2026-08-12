@@ -6,3 +6,7 @@ dist
 test-audio/real/
 test-audio/formats/
 test-audio/edge/
+
+# The JUCE checkout is a 100MB upstream clone. Fetched by native/setup.sh.
+native/vendor/
+native/build/
