@@ -54,7 +54,12 @@ PASS  level -12dB attenuates            rms ratio 0.2512 (want ~0.251)
 PASS  rechop gives a different chop
 PASS  the rack reaches chop mode        verb on changed the loop
 PASS  chop + mangle renders             32.00s after chop + mangle
-PASS  state round trips                 saved and restored
+PASS  play restarts from the beginning
+PASS  rechop restarts from the beginning was at 0.00726, now 0.00018
+PASS  exports a wav                      4233704 bytes
+PASS  the export decodes back            32.000s, 24 bit
+PASS  the drag file is written           hazen_harness-chop-120bpm.wav
+PASS  state round trips                  saved and restored
 ```
 
 ## Load it in Ableton
@@ -64,8 +69,19 @@ PASS  state round trips                 saved and restored
 2. It appears in the browser under Plug-Ins → HAZEN → **HAZEN Sampler**, as an
    *instrument*, so drop it on a MIDI track.
 3. Drag an audio file onto the plugin window, or press `load a sample`.
-4. Play a MIDI note to trigger it, or leave `sync` on and it follows the host
-   transport, restarting on the bar.
+4. Press `play` to hear it. A MIDI note also triggers it, and with `sync` on it
+   follows the host transport, restarting on the bar.
+
+## Getting the audio onto a track
+
+`drag to a track` is the short way: drag from that panel straight into Ableton's
+arrangement or session view and the loop lands as an audio clip. It writes a
+24-bit WAV to a temp folder and hands the host the file, named after the source,
+the mode and the tempo — `loveme-chop-140bpm.wav` — so a session full of them
+still makes sense a week later.
+
+`export wav` is the same file through a save dialog, for when you want it
+somewhere specific.
 
 It reads the host tempo and re-renders when it changes, so a chop built in a
 140 BPM set is cut for 140.
@@ -106,8 +122,7 @@ Worth knowing before you expect parity.
   a predictable one.
 - **30 second ceiling on the source.** Longer files are truncated and the status
   line says so. A whole track would make every render slow for no benefit.
-- **No key or tempo detection**, no folders, no WAV export. Those are the web
-  build's jobs; here the host does them.
+- **No key or tempo detection**, and no folders. Those are the web build's jobs.
 
 ## AU is not built, and why
 

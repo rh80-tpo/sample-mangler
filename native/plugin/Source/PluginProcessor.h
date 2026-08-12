@@ -72,6 +72,22 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   /// Ask for a re-render. Coalesced: many calls collapse into one pass.
   void invalidate();
 
+  // --- transport -------------------------------------------------------
+  /// Play from the top. Independent of the host transport, so it still works
+  /// with sync on and the host stopped.
+  void startPlayback();
+  void stopPlayback();
+  bool isPlaying() const { return playing.load(); }
+
+  /// Write the rendered loop as a 24-bit WAV. Returns false if there is nothing
+  /// to write or the file could not be opened.
+  bool exportTo(const juce::File& file) const;
+  /// A WAV of the current loop in the temp folder, for dragging into a host.
+  /// Empty file on failure.
+  juce::File writeDragFile() const;
+  /// A name worth giving an exported file: the source plus what was done to it.
+  juce::String exportName() const;
+
   /// Roll a random chain, the way the web build's reroll does.
   void reroll();
   /// A fresh chop from the same settings. The rhythm is seeded, so without this
@@ -138,6 +154,13 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   // loop player, and two copies of the same loop overlapping is never what you
   // want.
   std::atomic<bool> playing{false};
+  /// Set by the play button. Kept apart from `playing` so the sync branch cannot
+  /// switch off a playback the user started while the host sits stopped.
+  std::atomic<bool> manualPlay{false};
+  /// Set by the actions that mean "this is a new idea" — rechop, reroll, load.
+  /// A plain knob tweak leaves the playhead alone, because losing your place
+  /// every time you nudge a dial is worse than keeping it.
+  std::atomic<bool> restartPending{false};
   double playHead = 0.0;
   bool syncToHost = false;
   double lastHostPpq = -1.0;

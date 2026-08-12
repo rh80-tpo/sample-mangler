@@ -155,8 +155,23 @@ bool HazenSamplerProcessor::loadSample(const juce::File& file) {
     loadedName = file.getFileName();
     statusText = frames > maxFrames ? loadedName + " (first 30s)" : loadedName;
   }
+  restartPending.store(true);
   invalidate();
   return true;
+}
+
+void HazenSamplerProcessor::startPlayback() {
+  const juce::ScopedLock sl(audioLock);
+  playHead = 0.0;
+  manualPlay.store(true);
+  playing.store(true);
+}
+
+void HazenSamplerProcessor::stopPlayback() {
+  manualPlay.store(false);
+  playing.store(false);
+  const juce::ScopedLock sl(audioLock);
+  playHead = 0.0;
 }
 
 void HazenSamplerProcessor::invalidate() {
@@ -263,6 +278,10 @@ void HazenSamplerProcessor::renderNow() {
     const juce::ScopedLock sl(audioLock);
     rendered = std::move(out);
     voices = std::move(builtVoices);
+    // A rechop or a roll is a new idea, so it should be heard from the top
+    // rather than from wherever the last one happened to be.
+    if (restartPending.exchange(false)) playHead = 0.0;
+    else if (playHead >= static_cast<double>(rendered.frames())) playHead = 0.0;
     statusText = loadedName.isEmpty() ? note : loadedName + " · " + note;
   }
   rendering.store(false);
@@ -295,7 +314,9 @@ void HazenSamplerProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             lastHostPpq = wrapped;
             playing.store(true);
           } else {
-            playing.store(false);
+            // Host stopped. Fall back to whatever the play button asked for
+            // instead of forcing silence.
+            playing.store(manualPlay.load());
             lastHostPpq = -1.0;
           }
         }
@@ -407,6 +428,50 @@ std::vector<float> HazenSamplerProcessor::rms(int columns) const {
   return out;
 }
 
+juce::String HazenSamplerProcessor::exportName() const {
+  const juce::ScopedLock sl(audioLock);
+  auto base = loadedName.isEmpty() ? juce::String("hazen") : loadedName.upToLastOccurrenceOf(".", false, false);
+  if (base.isEmpty()) base = "hazen";
+  const auto what = modeIndex == 1 ? "chop" : "mangle";
+  return base + "-" + what + "-" + juce::String(juce::roundToInt(hostBpm)) + "bpm";
+}
+
+bool HazenSamplerProcessor::exportTo(const juce::File& file) const {
+  hazen::Audio copy;
+  {
+    const juce::ScopedLock sl(audioLock);
+    if (rendered.frames() == 0) return false;
+    copy = rendered;
+  }
+  file.deleteFile();
+  auto stream = std::unique_ptr<juce::FileOutputStream>(file.createOutputStream());
+  if (stream == nullptr) return false;
+
+  juce::WavAudioFormat wav;
+  // 24 bit, matching the web build's export. It is what a sampler hands back.
+  std::unique_ptr<juce::AudioFormatWriter> writer(
+      wav.createWriterFor(stream.get(), copy.sample_rate,
+                          static_cast<unsigned int>(copy.channel_count()), 24, {}, 0));
+  if (writer == nullptr) return false;
+  stream.release();  // the writer owns it now
+
+  const int n = static_cast<int>(copy.frames());
+  juce::AudioBuffer<float> buffer(copy.channel_count(), n);
+  for (int c = 0; c < copy.channel_count(); ++c) {
+    std::copy(copy.channels[static_cast<std::size_t>(c)].begin(),
+              copy.channels[static_cast<std::size_t>(c)].end(), buffer.getWritePointer(c));
+  }
+  return writer->writeFromAudioSampleBuffer(buffer, 0, n);
+}
+
+juce::File HazenSamplerProcessor::writeDragFile() const {
+  const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                       .getChildFile("HAZEN Sampler");
+  dir.createDirectory();
+  const auto file = dir.getChildFile(exportName() + ".wav");
+  return exportTo(file) ? file : juce::File{};
+}
+
 void HazenSamplerProcessor::getStateInformation(juce::MemoryBlock& dest) {
   auto state = params.copyState();
   // The sample path travels with the session. The audio itself does not: a
@@ -490,6 +555,7 @@ void HazenSamplerProcessor::reroll() {
     }
   }
 
+  restartPending.store(true);
   // Remember it, and drop anything we had stepped past.
   if (!rolls.empty() && rollAt + 1 < rolls.size()) rolls.resize(rollAt + 1);
   rolls.push_back(params.copyState().createCopy());
@@ -510,6 +576,7 @@ void HazenSamplerProcessor::rechop() {
   // Only the seed moves. Same tempo, same pattern, same feel — a different
   // performance of them, which is what "rechop" means on the site too.
   rollSeed = dice.nextInt({1, 1 << 30});
+  restartPending.store(true);
   invalidate();
 }
 

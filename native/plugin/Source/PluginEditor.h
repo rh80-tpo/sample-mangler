@@ -21,6 +21,7 @@
  */
 class HazenSamplerEditor : public juce::AudioProcessorEditor,
                            public juce::FileDragAndDropTarget,
+                           public juce::DragAndDropContainer,
                            private juce::Timer {
  public:
   explicit HazenSamplerEditor(HazenSamplerProcessor&);
@@ -85,7 +86,28 @@ class HazenSamplerEditor : public juce::AudioProcessorEditor,
   Knob density, variation, hold;
   Knob duck, duckRelease, level;
 
+  /**
+   * Drag this into a host to get the audio as a file.
+   *
+   * The point of the whole plugin is producing a loop you then use, and the
+   * shortest path from "it sounds right" to "it is on an audio track" is
+   * dragging it there. A save dialog plus a trip through Finder is the long way
+   * round, so that is the fallback rather than the route.
+   */
+  struct DragOut : public juce::Component {
+    explicit DragOut(HazenSamplerEditor& owner) : editor(owner) {}
+    void paint(juce::Graphics&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseEnter(const juce::MouseEvent&) override { hover = true; repaint(); }
+    void mouseExit(const juce::MouseEvent&) override { hover = false; repaint(); }
+    HazenSamplerEditor& editor;
+    bool hover = false;
+  };
+
   juce::TextButton loadButton{"load a sample"};
+  juce::TextButton playButton{"play"}, stopButton{"stop"};
+  juce::TextButton exportButton{"export wav"};
+  DragOut dragOut{*this};
   juce::TextButton rechopButton{"rechop"};
   juce::TextButton chopMangleButton{"rechop + mangle"};
   juce::TextButton rerollButton{"reroll"};

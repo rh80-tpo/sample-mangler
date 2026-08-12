@@ -155,6 +155,69 @@ int main() {
   check("chop + mangle renders", p.renderedSeconds() > 0.0,
         juce::String(p.renderedSeconds(), 2) + "s after chop + mangle");
 
+  // --- transport and export --------------------------------------------
+  p.stopPlayback();
+  check("stop leaves it silent", !p.isPlaying(), "not playing");
+
+  p.startPlayback();
+  check("play starts it", p.isPlaying(), "playing");
+  {
+    // Play must begin at the top, and rechop must send it back there.
+    juce::AudioBuffer<float> out(2, 256);
+    juce::MidiBuffer none;
+    out.clear();
+    p.processBlock(out, none);
+    const float firstAfterPlay = out.getSample(0, 0);
+    for (int b = 0; b < 20; ++b) { out.clear(); p.processBlock(out, none); }
+    p.startPlayback();
+    out.clear();
+    p.processBlock(out, none);
+    check("play restarts from the beginning",
+          std::abs(out.getSample(0, 0) - firstAfterPlay) < 1.0e-6f,
+          "same first sample both times");
+  }
+
+  {
+    // Rechopping mid-playback has to send the playhead home, not leave it
+    // wherever the previous loop happened to be.
+    p.startPlayback();
+    juce::AudioBuffer<float> out(2, 256);
+    juce::MidiBuffer none;
+    for (int b = 0; b < 40; ++b) { out.clear(); p.processBlock(out, none); }
+    const float mid = p.playPosition();
+    p.rechop();
+    settle();
+    out.clear();
+    p.processBlock(out, none);
+    const float after = p.playPosition();
+    check("rechop restarts from the beginning", mid > 0.0f && after < mid,
+          "was at " + juce::String(mid, 5) + ", now " + juce::String(after, 5));
+  }
+
+  {
+    const auto wav = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("hazen_export_check.wav");
+    check("exports a wav", p.exportTo(wav) && wav.getSize() > 1000,
+          juce::String(wav.getSize()) + " bytes");
+
+    // It has to be a real, readable file, or the drag hands the host garbage.
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> back(fm.createReaderFor(wav));
+    const double seconds = back ? double(back->lengthInSamples) / back->sampleRate : 0.0;
+    check("the export decodes back", back != nullptr && std::abs(seconds - p.renderedSeconds()) < 0.01,
+          back ? juce::String(seconds, 3) + "s, " + juce::String(back->bitsPerSample) + " bit"
+               : "unreadable");
+    wav.deleteFile();
+
+    const auto dragFile = p.writeDragFile();
+    check("the drag file is written", dragFile.existsAsFile() && dragFile.getSize() > 1000,
+          dragFile.getFileName());
+    check("the drag file is named usefully", dragFile.getFileName().contains("bpm"),
+          dragFile.getFileName());
+  }
+  p.stopPlayback();
+
   check("state round trips", [&] {
     juce::MemoryBlock mb; p.getStateInformation(mb);
     if (mb.getSize() == 0) return false;

@@ -192,6 +192,29 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
   rollLabel.setJustificationType(juce::Justification::centred);
   addAndMakeVisible(rollLabel);
 
+  // Transport. Playing should not require a MIDI note or a rolling host — the
+  // first thing you want after loading a sample is to hear it.
+  playButton.setColour(juce::TextButton::buttonColourId, kSunken);
+  stopButton.setColour(juce::TextButton::buttonColourId, kSunken);
+  exportButton.setColour(juce::TextButton::buttonColourId, kSunken);
+  for (auto* b : {&playButton, &stopButton, &exportButton}) addAndMakeVisible(b);
+  playButton.onClick = [this] { processor.startPlayback(); };
+  stopButton.onClick = [this] { processor.stopPlayback(); };
+  exportButton.onClick = [this] {
+    chooser = std::make_unique<juce::FileChooser>(
+        "Export the loop", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                               .getChildFile(processor.exportName() + ".wav"),
+        "*.wav");
+    chooser->launchAsync(juce::FileBrowserComponent::saveMode |
+                             juce::FileBrowserComponent::canSelectFiles |
+                             juce::FileBrowserComponent::warnAboutOverwriting,
+                         [this](const juce::FileChooser& fc) {
+                           const auto file = fc.getResult();
+                           if (file != juce::File{}) processor.exportTo(file);
+                         });
+  };
+
+  addAndMakeVisible(dragOut);
   addAndMakeVisible(loadButton);
   loadButton.onClick = [this] {
     chooser = std::make_unique<juce::FileChooser>(
@@ -409,6 +432,11 @@ void HazenSamplerEditor::timerCallback() {
   rollBack.setEnabled(processor.rollIndex() > 0);
   rollForward.setEnabled(count > 0 && processor.rollIndex() < count - 1);
 
+  playButton.setEnabled(processor.renderedSeconds() > 0.0 && !processor.isPlaying());
+  stopButton.setEnabled(processor.isPlaying());
+  exportButton.setEnabled(processor.renderedSeconds() > 0.0);
+  dragOut.repaint();
+
   repaint(waveArea);
 }
 
@@ -561,7 +589,16 @@ void HazenSamplerEditor::resized() {
     auto modeCell = inner.removeFromLeft(110);
     mode.caption.setBounds(modeCell.removeFromTop(10));
     mode.box.setBounds(modeCell.reduced(0, 1));
-    inner.removeFromLeft(10);
+    inner.removeFromLeft(12);
+    playButton.setBounds(inner.removeFromLeft(64).withSizeKeepingCentre(64, 26));
+    inner.removeFromLeft(4);
+    stopButton.setBounds(inner.removeFromLeft(64).withSizeKeepingCentre(64, 26));
+    inner.removeFromLeft(12);
+    // Export sits next to the drag handle: same job, one for each habit.
+    dragOut.setBounds(inner.removeFromRight(132).withSizeKeepingCentre(132, 28));
+    inner.removeFromRight(6);
+    exportButton.setBounds(inner.removeFromRight(96).withSizeKeepingCentre(96, 26));
+    inner.removeFromRight(12);
     hint.setBounds(inner);
   }
   area.removeFromTop(6);
@@ -667,6 +704,37 @@ void HazenSamplerEditor::resized() {
     inner.removeFromTop(14);
     placeKnobs(inner.removeFromLeft(72), {&level});
   }
+}
+
+void HazenSamplerEditor::DragOut::paint(juce::Graphics& g) {
+  const auto r = getLocalBounds().toFloat().reduced(0.5f);
+  const bool ready = editor.processor.renderedSeconds() > 0.0;
+  g.setColour(kSunken.withAlpha(ready ? 1.0f : 0.5f));
+  g.fillRoundedRectangle(r, 3.0f);
+  // Dashed, so it reads as a place to grab from rather than a button to press.
+  juce::Path border;
+  border.addRoundedRectangle(r, 3.0f);
+  const float dashes[] = {4.0f, 3.0f};
+  g.setColour(ready ? (hover ? kSignal : kHairlineStrong) : kHairline);
+  g.strokePath(border, juce::PathStrokeType{1.0f}, {});
+  juce::Path dashed;
+  juce::PathStrokeType{1.0f}.createDashedStroke(dashed, border, dashes, 2);
+  g.fillPath(dashed);
+
+  g.setColour(ready ? (hover ? kSignal : kInkDim) : kInkFaint);
+  g.setFont(mono(10.0f));
+  g.drawText(ready ? "drag to a track" : "nothing to drag yet", getLocalBounds(),
+             juce::Justification::centred);
+}
+
+void HazenSamplerEditor::DragOut::mouseDrag(const juce::MouseEvent&) {
+  if (editor.processor.renderedSeconds() <= 0.0) return;
+  const auto file = editor.processor.writeDragFile();
+  if (file == juce::File{}) return;
+  // An external drag, so the destination is any app that takes files — which is
+  // what puts it on an Ableton audio track in one gesture.
+  juce::DragAndDropContainer::performExternalDragDropOfFiles({file.getFullPathName()}, false,
+                                                             &editor, nullptr);
 }
 
 bool HazenSamplerEditor::isInterestedInFileDrag(const juce::StringArray& files) {
