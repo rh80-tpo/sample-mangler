@@ -3,6 +3,10 @@
 #include "PluginEditor.h"
 
 namespace {
+/// Bytes, not a source literal: the encoding of this file is not something to
+/// bet the status line on.
+const juce::String kDot = juce::String::fromUTF8(" \xc2\xb7 ");
+
 constexpr const char* kModes[] = {"mangle", "chop"};
 constexpr const char* kPatterns[] = {"AAAB", "ABAB", "AABA", "ABAC", "AAAA", "ABCB"};
 constexpr const char* kCuts[] = {"transients", "1/1", "1/2", "1/4", "1/8", "1/16"};
@@ -188,7 +192,7 @@ void HazenSamplerProcessor::readParameters() {
   mangle.verb_size = raw("verbsize");
   mangle.verb_damp = raw("verbdamp");
   mangle.verb_mix = raw("verbmix");
-  mangle.seed = 1;
+  mangle.seed = rollSeed;
   barsWanted = barsFor(static_cast<int>(raw("bars")));
 
   chopping.bpm = hostBpm;
@@ -199,7 +203,7 @@ void HazenSamplerProcessor::readParameters() {
   chopping.variation = raw("variation");
   chopping.hold = raw("hold");
   chopping.resolution = static_cast<int>(raw("res")) == 0 ? 8 : 16;
-  chopping.seed = 1;
+  chopping.seed = rollSeed;
 
   duckAmount = raw("duck");
   duckRelease = raw("duckrel");
@@ -235,13 +239,21 @@ void HazenSamplerProcessor::renderNow() {
     const auto chopped = hazen::build_chop(input, chopping);
     out = chopped.audio;
     builtVoices = chopped.voices;
-    note = juce::String(chopped.bars) + " bars · " + juce::String(chopped.slice_count) +
+    note = juce::String(chopped.bars) + " bars" + kDot + juce::String(chopped.slice_count) +
            (chopping.cut_per_bar > 0 ? " slices on a grid" : " slices from transients");
+    // The rack runs over the finished loop, the way it does on the site. It was
+    // skipped entirely here, so every module was dead in chop mode. No bar
+    // fitting afterwards: the chop is already exact, and a reverb tail is meant
+    // to ring past the loop rather than be trimmed back into it.
+    if (rackActive()) {
+      hazen::run_mangle(out, mangle);
+      note += kDot + juce::String("racked");
+    }
   } else {
     out = input;
     hazen::run_mangle(out, mangle);
     hazen::fit_to_bars(out, barsWanted, hostBpm);
-    note = juce::String(barsWanted, 0) + " bars · mangled";
+    note = juce::String(barsWanted, 0) + juce::String(" bars") + kDot + "mangled";
   }
 
   hazen::apply_sidechain(out, duckAmount, duckRate, duckRelease, hostBpm);
@@ -374,6 +386,27 @@ std::vector<float> HazenSamplerProcessor::peaks(int columns) const {
   return out;
 }
 
+std::vector<float> HazenSamplerProcessor::rms(int columns) const {
+  std::vector<float> out;
+  const juce::ScopedLock sl(audioLock);
+  if (rendered.frames() == 0 || columns <= 0) return out;
+  out.resize(static_cast<std::size_t>(columns), 0.0f);
+  const auto per = std::max<std::size_t>(1, rendered.frames() / static_cast<std::size_t>(columns));
+  for (int i = 0; i < columns; ++i) {
+    const std::size_t at = static_cast<std::size_t>(i) * per;
+    double sum = 0.0;
+    std::size_t n = 0;
+    for (const auto& ch : rendered.channels) {
+      for (std::size_t j = at; j < std::min(rendered.frames(), at + per); ++j) {
+        sum += static_cast<double>(ch[j]) * ch[j];
+        ++n;
+      }
+    }
+    out[static_cast<std::size_t>(i)] = n ? static_cast<float>(std::sqrt(sum / double(n))) : 0.0f;
+  }
+  return out;
+}
+
 void HazenSamplerProcessor::getStateInformation(juce::MemoryBlock& dest) {
   auto state = params.copyState();
   // The sample path travels with the session. The audio itself does not: a
@@ -463,6 +496,28 @@ void HazenSamplerProcessor::reroll() {
   if (rolls.size() > 24) rolls.erase(rolls.begin());
   rollAt = rolls.size() - 1;
   invalidate();
+}
+
+bool HazenSamplerProcessor::rackActive() const {
+  auto on = [this](const char* id) {
+    return params.getRawParameterValue(id)->load() > 0.5f;
+  };
+  return on("revon") || on("chopon") || on("crushon") || on("pitchon") || on("driveon") ||
+         on("verbon");
+}
+
+void HazenSamplerProcessor::rechop() {
+  // Only the seed moves. Same tempo, same pattern, same feel — a different
+  // performance of them, which is what "rechop" means on the site too.
+  rollSeed = dice.nextInt({1, 1 << 30});
+  invalidate();
+}
+
+void HazenSamplerProcessor::chopAndMangle() {
+  rollSeed = dice.nextInt({1, 1 << 30});
+  // reroll() already invalidates, and it snapshots the roll for the history, so
+  // the new rhythm and the new rack land together as one undoable step.
+  reroll();
 }
 
 bool HazenSamplerProcessor::stepRoll(int delta) {

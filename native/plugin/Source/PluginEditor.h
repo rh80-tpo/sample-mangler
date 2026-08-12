@@ -86,6 +86,8 @@ class HazenSamplerEditor : public juce::AudioProcessorEditor,
   Knob duck, duckRelease, level;
 
   juce::TextButton loadButton{"load a sample"};
+  juce::TextButton rechopButton{"rechop"};
+  juce::TextButton chopMangleButton{"rechop + mangle"};
   juce::TextButton rerollButton{"reroll"};
   juce::TextButton rollBack{"<"}, rollForward{">"};
   juce::Label title, subtitle, statusLabel, rollLabel, hint;
@@ -93,6 +95,7 @@ class HazenSamplerEditor : public juce::AudioProcessorEditor,
 
   std::vector<Module> mangleModules;
   std::vector<float> wave;
+  std::vector<float> core;
   std::vector<float> voiceAt;
   std::vector<int> voiceSlice;
   float playhead = -1.0f;

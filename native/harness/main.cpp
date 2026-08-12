@@ -108,6 +108,53 @@ int main() {
   check("level -12dB attenuates", ratio > 0.15 && ratio < 0.40,
         "rms ratio " + juce::String(ratio, 4) + " (want ~0.251)");
 
+  // --- rechop, and the rack in chop mode -------------------------------
+  // Both were broken: the chop seed was hardcoded so every chop of a setup was
+  // byte-identical, and run_mangle was never called in chop mode so the whole
+  // rack was dead there.
+  auto fingerprint = [&](HazenSamplerProcessor& proc) {
+    juce::AudioBuffer<float> out(2, 512);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+    juce::int64 hash = 0;
+    for (int b = 0; b < 30; ++b) {
+      out.clear();
+      proc.processBlock(out, midi);
+      midi.clear();
+      for (int i = 0; i < 512; i += 7)
+        hash = hash * 31 + juce::roundToInt(out.getSample(0, i) * 1e6);
+    }
+    return hash;
+  };
+  auto settle = [&] {
+    juce::Thread::sleep(300);
+    for (int i = 0; i < 200 && p.isRendering(); ++i) juce::Thread::sleep(25);
+    juce::Thread::sleep(120);
+  };
+
+  const auto chopA = fingerprint(p);
+  p.rechop();
+  settle();
+  const auto chopB = fingerprint(p);
+  check("rechop gives a different chop", chopA != chopB,
+        juce::String(chopA) + " then " + juce::String(chopB));
+
+  check("the rack is off to begin with", !p.rackActive(), "no module on");
+  if (auto* verb = p.params.getParameter("verbon")) {
+    verb->beginChangeGesture();
+    verb->setValueNotifyingHost(1.0f);
+    verb->endChangeGesture();
+  }
+  p.invalidate();
+  settle();
+  check("the rack reaches chop mode", p.rackActive() && fingerprint(p) != chopB,
+        "verb on changed the loop");
+
+  p.chopAndMangle();
+  settle();
+  check("chop + mangle renders", p.renderedSeconds() > 0.0,
+        juce::String(p.renderedSeconds(), 2) + "s after chop + mangle");
+
   check("state round trips", [&] {
     juce::MemoryBlock mb; p.getStateInformation(mb);
     if (mb.getSize() == 0) return false;

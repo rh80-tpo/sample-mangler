@@ -61,6 +61,10 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   double renderedSeconds() const;
   /// A copy of the rendered peaks for drawing, or empty if there is nothing yet.
   std::vector<float> peaks(int columns) const;
+  /// Per-column rms, parallel to peaks(). Drawn as a brighter core inside the
+  /// envelope so loud-and-dense reads differently from loud-and-spiky, which is
+  /// most of what a waveform is for.
+  std::vector<float> rms(int columns) const;
   /// 0 to 1 through the rendered buffer, or -1 when idle.
   float playPosition() const;
   juce::String status() const;
@@ -70,6 +74,14 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
 
   /// Roll a random chain, the way the web build's reroll does.
   void reroll();
+  /// A fresh chop from the same settings. The rhythm is seeded, so without this
+  /// every chop of a given setup was byte-identical and there was no way to ask
+  /// for another one.
+  void rechop();
+  /// Rechop and roll a random rack over it in one press.
+  void chopAndMangle();
+  /// True when any rack module is switched on.
+  bool rackActive() const;
   /// Step through past rolls. -1 back, +1 forward. Returns false at the ends.
   bool stepRoll(int delta);
   int rollIndex() const { return static_cast<int>(rollAt); }
@@ -106,6 +118,9 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   std::vector<juce::ValueTree> rolls;
   std::size_t rollAt = 0;
   juce::Random dice;
+  /// Feeds both the chop's rhythm and the rack's chop. Changing it is what makes
+  /// a rechop different from the last one.
+  std::uint32_t rollSeed = 1;
 
   // Settings snapshot, read on the message thread, used by the render thread.
   hazen::MangleSettings mangle;

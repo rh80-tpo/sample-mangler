@@ -51,6 +51,9 @@ PASS  mangle fits the bar count         4.0000s for 2 bars @120
 PASS  chop mode renders 16 bars         32.000s (want 32.0)
 PASS  chop mode makes sound             rms 0.23484
 PASS  level -12dB attenuates            rms ratio 0.2512 (want ~0.251)
+PASS  rechop gives a different chop
+PASS  the rack reaches chop mode        verb on changed the loop
+PASS  chop + mangle renders             32.00s after chop + mangle
 PASS  state round trips                 saved and restored
 ```
 
@@ -80,6 +83,19 @@ the buffer. The cost is that a parameter change is not instant — it queues a
 re-render, and the editor says when one is in flight. That is an honest
 trade rather than a limitation to hide.
 
+## Both actions on the chopper
+
+`rechop` gives a different take of the same setup — only the seed moves, so the
+tempo, pattern, cut and feel all stay. It exists because the rhythm is seeded:
+without it, every chop of a given setup came out byte-identical and there was no
+way to ask for another one.
+
+`rechop + mangle` rechops *and* rolls a random rack over the result, which is the
+fastest way to find something. The rack runs over the finished loop rather than
+the vocal going in, the same order the site uses, and there is no bar fitting
+afterwards — the chop is already exact, and a reverb tail is meant to ring past
+the loop rather than be trimmed back into it.
+
 ## What differs from the web build
 
 Worth knowing before you expect parity.
@@ -88,10 +104,6 @@ Worth knowing before you expect parity.
   passes, which is a lot of what makes a roll surprising. Here every control is
   visible at once, and a hidden order you cannot see or set would be worse than
   a predictable one.
-- **No reverb damping.** The C++ reverb has decay and mix, not damping. There is
-  no knob for it rather than a knob that does nothing.
-- **No roll dice.** The plugin has no `reroll`: you set the chain. Rolling
-  belongs to the web tool, where the point is discovery.
 - **30 second ceiling on the source.** Longer files are truncated and the status
   line says so. A whole track would make every render slow for no benefit.
 - **No key or tempo detection**, no folders, no WAV export. Those are the web

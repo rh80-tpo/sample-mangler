@@ -34,10 +34,18 @@ juce::Font mono(float size, bool bold = false) {
 /// Section chrome: a titled box. Returns the space left inside it.
 juce::Rectangle<int> panel(juce::Graphics& g, juce::Rectangle<int> area,
                            const juce::String& title) {
-  g.setColour(kRaised);
-  g.fillRect(area);
+  const auto r = area.toFloat();
+  // A shallow vertical gradient and a single bright top edge. This is the whole
+  // trick behind panels that look moulded rather than drawn: light appears to
+  // come from above, so a flat rectangle reads as a raised surface.
+  g.setGradientFill(juce::ColourGradient{kRaised.brighter(0.05f), r.getCentreX(), r.getY(),
+                                         kRaised.darker(0.22f), r.getCentreX(), r.getBottom(),
+                                         false});
+  g.fillRoundedRectangle(r, 3.0f);
+  g.setColour(kInk.withAlpha(0.055f));
+  g.drawLine(r.getX() + 3.0f, r.getY() + 0.5f, r.getRight() - 3.0f, r.getY() + 0.5f, 1.0f);
   g.setColour(kHairline);
-  g.drawRect(area, 1);
+  g.drawRoundedRectangle(r.reduced(0.5f), 3.0f, 1.0f);
   auto inner = area.reduced(10, 8);
   if (title.isNotEmpty()) {
     g.setColour(kSignal);
@@ -71,36 +79,82 @@ class KnobLook : public juce::LookAndFeel_V4 {
   }
 
   void drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos,
-                        float startAngle, float endAngle, juce::Slider&) override {
+                        float startAngle, float endAngle, juce::Slider& s) override {
     const auto bounds = juce::Rectangle<int>(x, y, w, h).toFloat().reduced(3.0f);
     const auto radius = juce::jmin(bounds.getWidth(), bounds.getHeight()) / 2.0f;
+    if (radius < 6.0f) return;
     const auto centre = bounds.getCentre();
     const auto angle = startAngle + pos * (endAngle - startAngle);
-    const float thickness = juce::jmax(2.0f, radius * 0.16f);
+    const float ring = juce::jmax(2.5f, radius * 0.15f);
+    const float capR = radius - ring * 1.9f;
+    const bool live = s.isEnabled();
+
+    // Tick marks around the travel. Cheap, and it is most of what separates a
+    // dial that looks like a control from a coloured arc.
+    g.setColour(kInk.withAlpha(live ? 0.16f : 0.07f));
+    for (int i = 0; i <= 10; ++i) {
+      const float a = startAngle + (endAngle - startAngle) * (float(i) / 10.0f);
+      const auto outer = centre.getPointOnCircumference(radius + 1.5f, a);
+      const auto tickIn = centre.getPointOnCircumference(radius - 0.5f, a);
+      g.drawLine({tickIn, outer}, i % 5 == 0 ? 1.2f : 0.7f);
+    }
 
     juce::Path track;
-    track.addCentredArc(centre.x, centre.y, radius - thickness, radius - thickness, 0.0f,
-                        startAngle, endAngle, true);
-    g.setColour(kHairlineStrong);
-    g.strokePath(track, juce::PathStrokeType{thickness, juce::PathStrokeType::curved,
+    track.addCentredArc(centre.x, centre.y, radius - ring, radius - ring, 0.0f, startAngle,
+                        endAngle, true);
+    g.setColour(kInk.withAlpha(live ? 0.13f : 0.06f));
+    g.strokePath(track, juce::PathStrokeType{ring, juce::PathStrokeType::curved,
                                              juce::PathStrokeType::rounded});
 
-    if (pos > 0.001f) {
+    if (pos > 0.002f) {
       juce::Path fill;
-      fill.addCentredArc(centre.x, centre.y, radius - thickness, radius - thickness, 0.0f,
-                         startAngle, angle, true);
-      g.setColour(kSignal);
-      g.strokePath(fill, juce::PathStrokeType{thickness, juce::PathStrokeType::curved,
+      fill.addCentredArc(centre.x, centre.y, radius - ring, radius - ring, 0.0f, startAngle,
+                         angle, true);
+      // A hint of glow under the arc, so the signal colour reads as emitted
+      // rather than painted.
+      g.setColour(kSignal.withAlpha(live ? 0.22f : 0.08f));
+      g.strokePath(fill, juce::PathStrokeType{ring * 2.1f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded});
+      g.setColour(live ? kSignal : kSignal.withAlpha(0.35f));
+      g.strokePath(fill, juce::PathStrokeType{ring, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded});
     }
 
-    // Pointer, so the position reads at a glance and not only from the arc.
-    juce::Path pointer;
-    pointer.addRectangle(-1.0f, -radius + thickness * 0.5f, 2.0f, radius * 0.52f);
-    pointer.applyTransform(juce::AffineTransform::rotation(angle).translated(centre));
-    g.setColour(kInk);
-    g.fillPath(pointer);
+    // The cap: dropped shadow, then a top-lit gradient. Same lighting model as
+    // the panels, so the whole face agrees about where the light is.
+    const auto cap = juce::Rectangle<float>{capR * 2.0f, capR * 2.0f}.withCentre(centre);
+    g.setColour(juce::Colours::black.withAlpha(0.45f));
+    g.fillEllipse(cap.translated(0.0f, 1.6f));
+    g.setGradientFill(juce::ColourGradient{juce::Colour{0xff2a2a30}, cap.getCentreX(), cap.getY(),
+                                           juce::Colour{0xff14141a}, cap.getCentreX(),
+                                           cap.getBottom(), false});
+    g.fillEllipse(cap);
+    g.setColour(kInk.withAlpha(0.10f));
+    g.drawEllipse(cap.reduced(0.5f), 1.0f);
+
+    // Pointer, inset into the cap rather than laid over it.
+    const auto from = centre.getPointOnCircumference(capR * 0.30f, angle);
+    const auto to = centre.getPointOnCircumference(capR * 0.92f, angle);
+    g.setColour(juce::Colours::black.withAlpha(0.5f));
+    g.drawLine({from.translated(0.0f, 1.0f), to.translated(0.0f, 1.0f)}, 2.4f);
+    g.setColour(live ? kInk : kInkFaint);
+    g.drawLine({from, to}, 2.0f);
   }
+
+  void drawButtonBackground(juce::Graphics& g, juce::Button& b, const juce::Colour& colour,
+                            bool hover, bool down) override {
+    const auto r = b.getLocalBounds().toFloat().reduced(0.5f);
+    const auto base = colour.withMultipliedBrightness(down ? 0.86f : hover ? 1.12f : 1.0f);
+    g.setColour(juce::Colours::black.withAlpha(0.35f));
+    g.fillRoundedRectangle(r.translated(0.0f, 1.0f), 3.0f);
+    g.setGradientFill(juce::ColourGradient{base.brighter(0.10f), r.getCentreX(), r.getY(),
+                                           base.darker(0.14f), r.getCentreX(), r.getBottom(),
+                                           false});
+    g.fillRoundedRectangle(r, 3.0f);
+    g.setColour(kInk.withAlpha(0.14f));
+    g.drawRoundedRectangle(r, 3.0f, 1.0f);
+  }
+
 };
 
 KnobLook& look() {
@@ -154,6 +208,17 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
   rerollButton.setColour(juce::TextButton::textColourOffId, kGround);
   addAndMakeVisible(rerollButton);
   rerollButton.onClick = [this] { processor.reroll(); };
+
+  // The chopper's own two actions. Without a rechop the rhythm was seeded and
+  // every chop of a given setup came out identical, with no way to ask for
+  // another take.
+  rechopButton.setColour(juce::TextButton::buttonColourId, kSunken);
+  chopMangleButton.setColour(juce::TextButton::buttonColourId, kSignal);
+  chopMangleButton.setColour(juce::TextButton::textColourOffId, kGround);
+  addAndMakeVisible(rechopButton);
+  addAndMakeVisible(chopMangleButton);
+  rechopButton.onClick = [this] { processor.rechop(); };
+  chopMangleButton.onClick = [this] { processor.chopAndMangle(); };
 
   for (auto* b : {&rollBack, &rollForward}) addAndMakeVisible(b);
   rollBack.onClick = [this] { processor.stepRoll(-1); };
@@ -296,6 +361,8 @@ void HazenSamplerEditor::applyMode() {
   rollBack.setVisible(!chop);
   rollForward.setVisible(!chop);
   rollLabel.setVisible(!chop);
+  rechopButton.setVisible(chop);
+  chopMangleButton.setVisible(chop);
   for (auto& m : mangleModules) {
     if (m.power) m.power->button.setVisible(!chop);
     for (auto* k : m.knobs) {
@@ -317,6 +384,7 @@ void HazenSamplerEditor::applyMode() {
 
 void HazenSamplerEditor::timerCallback() {
   wave = processor.peaks(juce::jmax(1, waveArea.getWidth() - 2));
+  core = processor.rms(juce::jmax(1, waveArea.getWidth() - 2));
   voiceAt = processor.voiceStarts();
   voiceSlice = processor.voiceSlices();
   playhead = processor.playPosition();
@@ -354,10 +422,18 @@ void HazenSamplerEditor::paint(juce::Graphics& g) {
   g.drawText("HAZEN", 16, 14, 76, 22, juce::Justification::left);
 
   // --- waveform -------------------------------------------------------
-  g.setColour(kSunken);
-  g.fillRect(waveArea);
-  g.setColour(kHairline);
-  g.drawRect(waveArea, 1);
+  {
+    const auto r = waveArea.toFloat();
+    // Sunken, not raised: dark at the top edge is what reads as recessed, and the
+    // waveform should look inset into the face rather than sitting on it.
+    g.setGradientFill(juce::ColourGradient{kSunken.darker(0.5f), r.getCentreX(), r.getY(),
+                                           kSunken, r.getCentreX(), r.getBottom(), false});
+    g.fillRoundedRectangle(r, 3.0f);
+    g.setColour(juce::Colours::black.withAlpha(0.55f));
+    g.drawLine(r.getX() + 3.0f, r.getY() + 0.5f, r.getRight() - 3.0f, r.getY() + 0.5f, 1.0f);
+    g.setColour(kHairline);
+    g.drawRoundedRectangle(r.reduced(0.5f), 3.0f, 1.0f);
+  }
 
   if (wave.empty()) {
     g.setColour(kInkFaint);
@@ -385,12 +461,24 @@ void HazenSamplerEditor::paint(juce::Graphics& g) {
       }
     }
 
+    // Envelope first, then a brighter rms core inside it. Peak alone cannot tell
+    // a dense loud passage from a spiky one, and that difference is most of what
+    // you read a waveform for.
     for (std::size_t i = 0; i < wave.size(); ++i) {
       const float x = float(inner.getX() + int(i));
       const float h = juce::jmax(0.75f, wave[i] * half);
       const auto base = tintFor[i] >= 0 ? kTints[tintFor[i]] : kSignal;
-      g.setColour(int(i) <= played ? base : base.withAlpha(0.32f));
+      const bool lit = int(i) <= played;
+      g.setColour(lit ? base.withAlpha(0.68f) : base.withAlpha(0.20f));
       g.drawLine(x, mid - h, x, mid + h, 1.0f);
+    }
+    for (std::size_t i = 0; i < core.size() && i < wave.size(); ++i) {
+      const float r = core[i] * half * 1.5f;
+      if (r < 0.6f) continue;
+      const float x = float(inner.getX() + int(i));
+      const auto base = tintFor[i] >= 0 ? kTints[tintFor[i]] : kSignal;
+      g.setColour(int(i) <= played ? base.brighter(0.35f) : base.withAlpha(0.34f));
+      g.drawLine(x, mid - r, x, mid + r, 1.0f);
     }
 
     // Boundary ticks, so the chops are separable without relying on colour.
@@ -487,6 +575,13 @@ void HazenSamplerEditor::resized() {
     inner.removeFromLeft(8);
     sync.button.setBounds(inner.removeFromLeft(76).withSizeKeepingCentre(76, 22));
     inner.removeFromLeft(12);
+
+    if (chopMode()) {
+      auto actions = inner.removeFromRight(300);
+      chopMangleButton.setBounds(actions.removeFromRight(160).withSizeKeepingCentre(160, 28));
+      actions.removeFromRight(8);
+      rechopButton.setBounds(actions.removeFromRight(104).withSizeKeepingCentre(104, 28));
+    }
 
     if (!chopMode()) {
       auto barsCell = inner.removeFromLeft(80);
