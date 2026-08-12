@@ -21,6 +21,10 @@ import {
 } from './audio/chopper'
 import { describeKey, detectKey } from './audio/key'
 import { describeDetected, detectTempo } from './audio/tempo'
+import { renderChain } from './audio/render'
+import { NO_FIT } from './audio/fit'
+import type { ChainSpec } from './audio/types'
+import { Rack } from './components/Rack'
 import { addItem, createFolder, listFolders } from './lib/library'
 
 const ACCEPT =
@@ -53,6 +57,15 @@ export function Chopper() {
   const [variation, setVariation] = useState(DEFAULT_CHOP.variation)
   const [resolution, setResolution] = useState<8 | 16>(DEFAULT_CHOP.resolution)
   const [inOrder, setInOrder] = useState(DEFAULT_CHOP.inOrder)
+  const [phraseBars, setPhraseBars] = useState<1 | 2 | 4>(DEFAULT_CHOP.phraseBars)
+  const [hold, setHold] = useState(DEFAULT_CHOP.hold)
+
+  /** Effects applied to the finished chop. Null until one is added. */
+  const [chain, setChain] = useState<ChainSpec | null>(null)
+  /** The chop with the rack applied, which is what plays and exports. */
+  const [processed, setProcessed] = useState<Pcm | null>(null)
+  const [cursor, setCursor] = useState(0)
+  const [target, setTarget] = useState<'vocal' | 'chop'>('chop')
 
   const [playing, setPlaying] = useState(false)
   const [playhead, setPlayhead] = useState<number | null>(null)
@@ -169,9 +182,12 @@ export function Chopper() {
         variation,
         resolution,
         inOrder,
+        phraseBars,
+        hold,
         seed: freshSeed(),
       })
       setResult(built)
+      setCursor(0)
       if (built.slices < 2) {
         setError(
           'only found one transient. try a more percussive vocal, or one with clearer consonants.',
@@ -182,7 +198,66 @@ export function Chopper() {
     } finally {
       setBusy(false)
     }
-  }, [source, busy, playback, bpm, pattern, density, variation, resolution, inOrder])
+  }, [source, busy, playback, bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold])
+
+  // --- the rack --------------------------------------------------------
+  // Effects are applied to the finished chop rather than the vocal, so the
+  // arrangement stays intact and the chain colours the whole loop.
+  const queue = useRef<{ running: boolean; pending: ChainSpec | null }>({
+    running: false,
+    pending: null,
+  })
+
+  const runChain = useCallback(
+    async (next: ChainSpec | null) => {
+      const base = result?.pcm
+      if (!base) return
+      if (!next || next.effects.length === 0) {
+        setProcessed(null)
+        return
+      }
+      if (queue.current.running) {
+        queue.current.pending = next
+        return
+      }
+      queue.current.running = true
+      try {
+        let target: ChainSpec | null = next
+        while (target) {
+          const { pcm } = await renderChain(base, target, NO_FIT)
+          setProcessed(pcm)
+          target = queue.current.pending
+          queue.current.pending = null
+        }
+      } catch (e) {
+        setError(e instanceof Error ? `that effect fell over. ${e.message}` : 'that effect fell over.')
+      } finally {
+        queue.current.running = false
+      }
+    },
+    [result],
+  )
+
+  // A fresh chop invalidates whatever the rack had produced.
+  useEffect(() => {
+    if (!result) {
+      setProcessed(null)
+      return
+    }
+    void runChain(chain)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result])
+
+  const onChainChange = useCallback(
+    (next: ChainSpec) => {
+      setChain(next.effects.length ? next : null)
+      void runChain(next.effects.length ? next : null)
+    },
+    [runChain],
+  )
+
+  /** What plays and exports: the chop through the rack, or the raw chop. */
+  const output = processed ?? result?.pcm ?? null
 
   // Rebuild when a control moves, but only once something exists.
   const first = useRef(true)
@@ -195,25 +270,43 @@ export function Chopper() {
     void chop()
     // Deliberately not depending on chop: it changes identity with every
     // control, and this should fire on the controls, not on the callback.
+    // Every control that feeds buildChop has to be listed here, or moving it
+    // updates the label and changes nothing, which is how phraseBars and hold
+    // silently did nothing on first pass.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bpm, pattern, density, variation, resolution, inOrder])
+  }, [bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold])
+
+  const current = target === 'vocal' ? source : (output ?? source)
 
   const togglePlay = useCallback(async () => {
-    const pcm = result?.pcm ?? source
-    if (!pcm) return
+    if (!current) return
     if (playback.playing) {
       playback.stop()
       setPlaying(false)
       setPlayhead(null)
       return
     }
-    await playback.play(pcm, 0, { loop })
+    await playback.play(current, cursor, { loop })
     setPlaying(true)
-  }, [result, source, playback, loop])
+  }, [current, playback, loop, cursor])
+
+  /** Click anywhere on a panel to play that panel from that point. */
+  const seekTo = useCallback(
+    async (which: 'vocal' | 'chop', position: number) => {
+      const pcm = which === 'vocal' ? source : output
+      if (!pcm) return
+      setTarget(which)
+      setCursor(position)
+      setPlayhead(position)
+      await playback.play(pcm, position, { loop })
+      setPlaying(true)
+    },
+    [source, output, playback, loop],
+  )
 
   const exportWav = useCallback(() => {
-    if (!result) return
-    const blob = encodeWav(result.pcm)
+    if (!output) return
+    const blob = encodeWav(output)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -223,23 +316,23 @@ export function Chopper() {
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 4000)
     setFlash(`exported ${a.download}`)
-  }, [result, fileName, pattern, bpm])
+  }, [output, fileName, pattern, bpm])
 
   const save = useCallback(async () => {
-    if (!result) return
+    if (!output) return
     const folders = await listFolders()
     const folder = folders[0] ?? (await createFolder('folder 1'))
     const name = `${fileName.replace(/\.[^.]+$/, '') || 'vocal'}-${pattern}-${bpm}bpm`
     await addItem({
       folderId: folder.id,
       name,
-      blob: encodeWav(result.pcm),
-      seconds: durationOf(result.pcm),
-      sampleRate: result.pcm.sampleRate,
-      channels: result.pcm.channels.length,
+      blob: encodeWav(output),
+      seconds: durationOf(output),
+      sampleRate: output.sampleRate,
+      channels: output.channels.length,
     })
     setFlash(`saved ${name} → ${folder.name}`)
-  }, [result, fileName, pattern, bpm])
+  }, [output, fileName, pattern, bpm])
 
   const barSeconds = (60 / bpm) * 4
 
@@ -269,6 +362,9 @@ export function Chopper() {
               label="vocal"
               summary={`${fmt(durationOf(source))} · ${source.channels.length === 1 ? 'mono' : 'stereo'}${sourceInfo ? ` · ${sourceInfo}` : ''}`}
               seconds={durationOf(source)}
+              playhead={target === 'vocal' ? (playing ? playhead : cursor) : null}
+              active={playing && target === 'vocal'}
+              onSeek={(p) => void seekTo('vocal', p)}
               tools={
                 <button
                   type="button"
@@ -278,6 +374,8 @@ export function Chopper() {
                     setPlaying(false)
                     setSource(null)
                     setResult(null)
+                    setProcessed(null)
+                    setChain(null)
                     setFileName('')
                   }}
                 >
@@ -286,18 +384,19 @@ export function Chopper() {
               }
             />
             <Waveform
-              pcm={result?.pcm ?? null}
+              pcm={output}
               tone="mangled"
               label={`chop · ${pattern}`}
               summary={
                 result
-                  ? `${result.bars} bars · ${fmt(durationOf(result.pcm))} · ${result.slices} slices from ${result.onsets} transients`
+                  ? `${result.bars} bars · ${fmt(durationOf(output ?? result.pcm))} · ${result.slices} slices from ${result.onsets} transients${processed ? ' · racked' : ''}`
                   : 'not yet'
               }
               tempo={result ? `${bpm} bpm · ${result.bars} bars` : null}
-              seconds={result ? durationOf(result.pcm) : 0}
-              playhead={playing ? playhead : null}
-              active={playing}
+              seconds={output ? durationOf(output) : 0}
+              playhead={target === 'chop' ? (playing ? playhead : cursor) : null}
+              active={playing && target === 'chop'}
+              onSeek={output ? (p) => void seekTo('chop', p) : undefined}
               placeholder="set a tempo, then chop"
               nonce={result?.slices ?? 0}
               sections={result?.sections}
@@ -404,6 +503,29 @@ export function Chopper() {
         </div>
 
         <div className="chopctl__row">
+          <span className="chopctl__title">length</span>
+          {/* The pattern always covers four phrases, so the phrase length is
+              what decides the total. One bar each gives the same AAAB shape
+              across 4 bars instead of 16. */}
+          <div className="len__bars" role="group" aria-label="Total length">
+            {([1, 2, 4] as const).map((b) => (
+              <button
+                key={b}
+                type="button"
+                className="len__opt"
+                aria-pressed={phraseBars === b}
+                onClick={() => setPhraseBars(b)}
+              >
+                {b * 4} bars
+              </button>
+            ))}
+          </div>
+          <span className="chopctl__hint">
+            {phraseBars * 4} bars total, {phraseBars} per phrase
+          </span>
+        </div>
+
+        <div className="chopctl__row">
           <span className="chopctl__title">feel</span>
           <label className="chopctl__slider">
             <span>density</span>
@@ -426,6 +548,17 @@ export function Chopper() {
               onChange={(e) => setVariation(Number(e.target.value) / 100)}
             />
             <b>{Math.round(variation * 100)}</b>
+          </label>
+          <label className="chopctl__slider" title="How far a slice rings past its own slot">
+            <span>hold</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={Math.round(hold * 100)}
+              onChange={(e) => setHold(Number(e.target.value) / 100)}
+            />
+            <b>{Math.round(hold * 100)}</b>
           </label>
           <div className="len__bars" role="group" aria-label="Grid resolution">
             {([8, 16] as const).map((r) => (
@@ -452,6 +585,17 @@ export function Chopper() {
         </div>
       </section>
 
+      {/* The rack colours the finished loop. Empty until you add something, so
+          it never sits there taking height from the waveforms for nothing. */}
+      {result ? (
+        <Rack
+          chain={chain ?? { seed: 0, effects: [] }}
+          onChange={onChainChange}
+          seconds={durationOf(result.pcm)}
+          busy={busy}
+        />
+      ) : null}
+
       <footer className="controls">
         <button
           type="button"
@@ -474,7 +618,7 @@ export function Chopper() {
           type="button"
           className="btn btn--ghost"
           onClick={() => void save()}
-          disabled={!result}
+          disabled={!output}
         >
           save
         </button>
@@ -482,7 +626,7 @@ export function Chopper() {
           type="button"
           className="btn btn--ghost"
           onClick={exportWav}
-          disabled={!result}
+          disabled={!output}
         >
           wav
         </button>

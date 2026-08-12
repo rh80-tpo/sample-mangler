@@ -17,6 +17,7 @@ import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
 import { DecodeError, decodeAudio } from './audio/decode'
 import { detectKey } from './audio/key'
+import { PATTERNS, buildChop } from './audio/chopper'
 import { describeLoopTempo, detectTempo, loopTempos } from './audio/tempo'
 
 const out = document.getElementById('out') as HTMLPreElement
@@ -183,6 +184,99 @@ async function run() {
       `${pairs} distinct pairs, worst-case corr ${maxPairCorr.toFixed(4)}` +
         (sameChainPairs ? `, ${sameChainPairs} repeat-chain pairs verified identical` : ''),
     )
+    log()
+  }
+
+  // --- the chopper ------------------------------------------------------
+  // The pattern is the feature, so it gets checked by measuring which phrases
+  // came out byte-identical rather than by trusting the label.
+  {
+    log('=== vocal chopper ===')
+    log()
+    const vocal = generateSample('vocal', ctx.sampleRate, freshSeed())
+    const base = {
+      bpm: 140,
+      density: 0.6,
+      variation: 0.6,
+      resolution: 16 as const,
+      inOrder: false,
+      phraseBars: 4 as const,
+      hold: 0.25,
+      seed: 4242,
+    }
+
+    const samePhrase = (a: Float32Array, b: Float32Array) => {
+      if (a.length !== b.length) return false
+      // Skip the ends: a buffer-wide edge fade is not a phrase difference.
+      for (let i = 5000; i < a.length - 5000; i += 5) {
+        if (Math.abs(a[i] - b[i]) > 1e-6) return false
+      }
+      return true
+    }
+
+    for (const pattern of PATTERNS.map((p) => p.id)) {
+      const r = buildChop(vocal, { ...base, pattern })
+      const q = r.pcm.channels[0].length / 4
+      if (!Number.isInteger(q)) {
+        check(`${pattern} phrases divide evenly`, false, `${q} frames per phrase`)
+        continue
+      }
+      const phrases = [0, 1, 2, 3].map((i) => r.pcm.channels[0].slice(i * q, (i + 1) * q))
+      // Rebuild the pattern from the audio: first phrase is A, each later one
+      // is whichever earlier phrase it matches, or a new letter.
+      const letters = ['A']
+      for (let i = 1; i < 4; i++) {
+        let found: string | null = null
+        for (let j = 0; j < i; j++) {
+          if (samePhrase(phrases[i], phrases[j])) {
+            found = letters[j]
+            break
+          }
+        }
+        letters.push(found ?? String.fromCharCode(65 + new Set(letters).size))
+      }
+      check(
+        `${pattern} arrangement is honoured`,
+        letters.join('') === pattern,
+        `audio reads as ${letters.join('')}`,
+      )
+    }
+
+    // Phrase length decides the total, and the total must be exact.
+    for (const phraseBars of [1, 2, 4] as const) {
+      const r = buildChop(vocal, { ...base, pattern: 'AAAB', phraseBars })
+      const wanted = phraseBars * 4
+      const seconds = durationOf(r.pcm)
+      const expected = wanted * (60 / base.bpm) * 4
+      check(
+        `${wanted} bar loop is exact`,
+        r.bars === wanted && Math.abs(seconds - expected) < 0.01,
+        `${r.bars} bars, ${seconds.toFixed(3)}s vs ${expected.toFixed(3)}s`,
+      )
+    }
+
+    // Hold has to lengthen the slices, not just redraw a number.
+    {
+      const tight = buildChop(vocal, { ...base, pattern: 'AAAA', hold: 0 })
+      const held = buildChop(vocal, { ...base, pattern: 'AAAA', hold: 1 })
+      // Measured as how much of the loop is actually sounding, not as level.
+      // The output is peak normalised, so letting slices ring raises the peak
+      // and the gain comes straight back off: mean level barely moves even
+      // though the chops are audibly longer. What hold changes is the fill.
+      const filled = (p: Pcm) => {
+        const ch = p.channels[0]
+        let n = 0
+        for (let i = 0; i < ch.length; i++) if (Math.abs(ch[i]) > 1e-3) n++
+        return n / ch.length
+      }
+      const a = filled(tight.pcm)
+      const b = filled(held.pcm)
+      check(
+        'hold extends the chops',
+        b > a * 1.15,
+        `${(a * 100).toFixed(1)}% of the loop sounding at hold 0, ${(b * 100).toFixed(1)}% at hold 1`,
+      )
+    }
     log()
   }
 

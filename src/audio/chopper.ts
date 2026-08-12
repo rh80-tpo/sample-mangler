@@ -38,6 +38,21 @@ export type ChopOptions = {
   seed: number
   /** Keep slices in the order they were sung rather than shuffling. */
   inOrder: boolean
+  /**
+   * Bars per phrase. The pattern always covers four phrases, so 4 gives a
+   * 16 bar loop and 1 gives a 4 bar one with the same AAAB shape.
+   */
+  phraseBars: 1 | 2 | 4
+  /**
+   * 0 to 1. How long a slice is allowed to ring.
+   *
+   * At 0 a slice stops at the next transient, which is tight and stuttery.
+   * Turning it up does two things at once: it gives the slice more room before
+   * the next hit, and it lets the slice keep reading past its own onset
+   * boundary into the rest of the take. Both are needed — a chop is usually
+   * shorter than its grid slot, so extra room on its own changes nothing.
+   */
+  hold: number
 }
 
 export const DEFAULT_CHOP: Omit<ChopOptions, 'seed'> = {
@@ -47,6 +62,8 @@ export const DEFAULT_CHOP: Omit<ChopOptions, 'seed'> = {
   variation: 0.6,
   resolution: 16,
   inOrder: false,
+  phraseBars: 4,
+  hold: 0.25,
 }
 
 const WIN = 1024
@@ -224,10 +241,11 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
   const slices = slicesFromOnsets(pcm, onsets)
 
   const sr = pcm.sampleRate
+  const total = pcm.channels[0].length
   const secPerBar = (60 / options.bpm) * 4
   const stepSeconds = secPerBar / options.resolution
   const stepSamples = Math.max(1, Math.round(stepSeconds * sr))
-  const PHRASE_BARS = 4
+  const PHRASE_BARS = options.phraseBars
   const phraseSamples = Math.round(PHRASE_BARS * secPerBar * sr)
 
   // One render per distinct letter, so repeats are exact.
@@ -246,11 +264,26 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
     for (let p = 0; p < placements.length; p++) {
       const { step, slice, gain } = placements[p]
       const at = step * stepSamples
-      // A slice runs until the next placement, so nothing overlaps into mush.
-      const nextStep = p + 1 < placements.length ? placements[p + 1].step : PHRASE_BARS * options.resolution
-      const room = Math.max(stepSamples, (nextStep - step) * stepSamples)
-      const available = slice.end - slice.start
-      const len = Math.min(available, room, phraseSamples - at)
+      // A slice runs until the next placement, so by default nothing overlaps
+      // into mush. `hold` extends that window and lets slices ring over each
+      // other, which is the difference between a stutter and a held vowel.
+      const nextStep =
+        p + 1 < placements.length ? placements[p + 1].step : PHRASE_BARS * options.resolution
+      const slot = Math.max(stepSamples, (nextStep - step) * stepSamples)
+      const room = Math.round(slot * (1 + options.hold * 5))
+      // Two separate limits, and hold lifts both.
+      //
+      // `room` is how long the rhythm leaves free. `reach` is how much material
+      // there is to play: a slice normally stops at the next onset, which is
+      // what makes a chop a chop, but that also means it is usually shorter
+      // than its own slot — so widening `room` alone changes nothing at all.
+      // Hold has to also let the slice read past its onset boundary into
+      // whatever came next in the take. That is the difference between a
+      // clipped syllable and a held vowel.
+      const natural = slice.end - slice.start
+      const toEnd = total - slice.start
+      const reach = Math.round(natural + (toEnd - natural) * options.hold)
+      const len = Math.min(reach, room, phraseSamples - at)
       if (len <= 0) continue
 
       const fade = Math.min(Math.floor(0.004 * sr), Math.floor(len / 2))
