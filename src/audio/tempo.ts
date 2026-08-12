@@ -1,6 +1,6 @@
 import type { Pcm } from './buffers'
 import { fft } from './dsp'
-import { BPM, SECONDS_PER_BAR } from './fit'
+import { DEFAULT_BPM, secondsPerBar } from './fit'
 
 /**
  * Tempo, answered two different ways because the question has two halves.
@@ -192,7 +192,7 @@ export function loopTempos(seconds: number): LoopFit[] {
     })
   }
   // Closest to the house default first: that is the one most likely wanted.
-  return out.sort((a, b) => Math.abs(a.bpm - BPM) - Math.abs(b.bpm - BPM))
+  return out.sort((a, b) => Math.abs(a.bpm - DEFAULT_BPM) - Math.abs(b.bpm - DEFAULT_BPM))
 }
 
 /**
@@ -208,7 +208,7 @@ export function describeLoopTempo(
 ): string | null {
   if (fittedBars !== null) {
     const label = fittedBars === 1 ? 'bar' : 'bars'
-    return `${BPM} bpm · ${fittedBars} ${label}`
+    return `${DEFAULT_BPM} bpm · ${fittedBars} ${label}`
   }
   const fits = loopTempos(seconds)
   if (!fits.length) return null
@@ -236,4 +236,4 @@ export function barsAtTempo(seconds: number, bpm: number): number {
   return (seconds * bpm) / 240
 }
 
-export { SECONDS_PER_BAR }
+export { secondsPerBar }

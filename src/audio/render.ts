@@ -14,7 +14,7 @@ import {
 import { applyChop, applyDecimate, applyReverse } from './effects'
 import {
   NO_FIT,
-  SECONDS_PER_BAR,
+  secondsPerBar,
   compensationSemitones,
   resampleTo,
   trimTo,
@@ -221,7 +221,7 @@ export async function renderChain(
   // Applied after the chain and before the final normalise, so whatever the
   // stretch does to level is accounted for in the output ceiling.
   if (fit.bars !== null) {
-    const target = fit.bars * SECONDS_PER_BAR
+    const target = fit.bars * secondsPerBar(fit.bpm)
     const before = durationOf(pcm)
     if (fit.mode === 'trim') {
       const untrimmed = pcm
@@ -262,7 +262,7 @@ export async function renderChain(
   // silence at both ends is a gap, not a seam. Left at its natural length it is
   // a one-shot, and gets ordinary edge fades.
   if (fit.bars !== null) {
-    pcm = foldLoopSeam(pcm, Math.round(fit.bars * SECONDS_PER_BAR * pcm.sampleRate))
+    pcm = foldLoopSeam(pcm, Math.round(fit.bars * secondsPerBar(fit.bpm) * pcm.sampleRate))
     pcm = normalizeInPlace(pcm)
   } else {
     pcm = normalizeInPlace(pcm)

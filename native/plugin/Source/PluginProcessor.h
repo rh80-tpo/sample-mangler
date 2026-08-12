@@ -68,6 +68,20 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   /// Ask for a re-render. Coalesced: many calls collapse into one pass.
   void invalidate();
 
+  /// Roll a random chain, the way the web build's reroll does.
+  void reroll();
+  /// Step through past rolls. -1 back, +1 forward. Returns false at the ends.
+  bool stepRoll(int delta);
+  int rollIndex() const { return static_cast<int>(rollAt); }
+  int rollCount() const { return static_cast<int>(rolls.size()); }
+
+  /// Chop voice starts as fractions of the buffer, for drawing boundaries.
+  std::vector<float> voiceStarts() const;
+  /// Which source slice each voice came from, parallel to voiceStarts().
+  std::vector<int> voiceSlices() const;
+  /// The grid in use: the host's tempo when synced, the tempo knob otherwise.
+  double tempo() const { return hostBpm; }
+
  private:
   void run() override;  // the render thread
   void renderNow();
@@ -81,11 +95,17 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   mutable juce::CriticalSection audioLock;
   hazen::Audio source;   ///< the loaded file, untouched
   hazen::Audio rendered; ///< what actually plays
+  std::vector<hazen::Voice> voices; ///< chop boundaries, for the editor
   juce::String loadedName;
   juce::String statusText{"drop a sample"};
 
   std::atomic<bool> rendering{false};
   std::atomic<bool> dirty{false};
+
+  /// Past rolls, as parameter snapshots. Tiny next to keeping the audio.
+  std::vector<juce::ValueTree> rolls;
+  std::size_t rollAt = 0;
+  juce::Random dice;
 
   // Settings snapshot, read on the message thread, used by the render thread.
   hazen::MangleSettings mangle;

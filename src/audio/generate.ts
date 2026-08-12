@@ -1,7 +1,7 @@
 import { applyEdgeFades, normalize, type Pcm } from './buffers'
 import { Biquad, VOWELS, adsr, midi, polyBlepSaw, reverb } from './dsp'
 import { mulberry32, pick, randInt, randRange, type Rng } from './rng'
-import { BPM, SECONDS_PER_BAR } from './fit'
+import { DEFAULT_BPM, secondsPerBar } from './fit'
 
 export type GeneratorId =
   | 'synth'
@@ -335,7 +335,7 @@ function makeKeys(ctx: Ctx): Pcm {
 function makeDrums(ctx: Ctx): Pcm {
   // Locked to the site tempo rather than rolling its own, so a generated loop
   // sits against everything else without being re-fitted.
-  const beat = 60 / BPM
+  const beat = 60 / DEFAULT_BPM
   const n = ctx.n
   const bars = Math.max(1, Math.round(n / ctx.sr / (beat * 4)))
   const [l, r] = blank(n)
@@ -501,7 +501,7 @@ export function generateSample(
 ): Pcm {
   const rng = mulberry32(seed)
   const bars = pick(rng, LENGTH_BARS[id])
-  const seconds = bars * SECONDS_PER_BAR
+  const seconds = bars * secondsPerBar()
   const ctx: Ctx = { sr: sampleRate, rng, n: Math.floor(seconds * sampleRate) }
 
   switch (id) {

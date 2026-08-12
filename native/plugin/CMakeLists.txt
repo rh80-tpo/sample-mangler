@@ -76,3 +76,28 @@ target_include_directories(HazenHarness PRIVATE
 target_link_libraries(HazenHarness PRIVATE
     juce::juce_audio_utils juce::juce_audio_formats juce::juce_audio_processors
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+# Renders the editor to a PNG without a window, so the UI can be reviewed at all
+# on a machine with no Screen Recording permission.
+juce_add_console_app(HazenSnapshot PRODUCT_NAME "hazen-snapshot")
+target_sources(HazenSnapshot PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../harness/snapshot.cpp
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp)
+target_compile_definitions(HazenSnapshot PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_STANDALONE_APPLICATION=1
+    # Needed to pump the message loop by hand so Timer-driven state settles
+    # before the snapshot is taken.
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JucePlugin_Name="HAZEN Sampler"
+    JucePlugin_IsSynth=1
+    JucePlugin_WantsMidiInput=1
+    JucePlugin_ProducesMidiOutput=0)
+target_include_directories(HazenSnapshot PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+target_link_libraries(HazenSnapshot PRIVATE
+    juce::juce_audio_utils juce::juce_audio_formats juce::juce_audio_processors
+    juce::juce_gui_basics
+    PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)

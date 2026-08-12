@@ -45,6 +45,26 @@ chop guarantees real scatter and stutter.
 | drive | amount | 0.18 to 0.62, or 0.62 to 0.92 on a 25% "hard" branch | 0 to 1 | Past ~0.7 Tone.Distortion is mostly square wave; under ~0.15 it is inaudible. |
 | drive | alias | 2x or 4x 80% of the time, else none | none / 2x / 4x | Oversampling is on most of the time because the aliasing without it reads as a bug rather than a choice. It gets switched off deliberately, not by accident. |
 
+## Tempo
+
+Adjustable, defaulting to 120.
+
+It was a hard constant, on the reasoning that a sampler's output has to land on a
+grid and guessing a source's tempo is a different product. The first half still
+holds. The second was the wrong conclusion: a producer working at 140 or 174
+could not use the bar fitting at all, and the chopper already had its own tempo,
+so the two halves of the tool disagreed with each other.
+
+| Control | Range | Why |
+| --- | --- | --- |
+| tempo | 40 to 220, presets 90 to 174, default 120 | 120 stays the default because it is what most of this was designed around, and a tempo you did not choose should be the common one. |
+
+Changing it keeps the bar *count* and lets the seconds follow. You picked 2 bars,
+not 4 seconds — so 2 bars at 140 becomes 3.43s rather than staying 4.00s and
+quietly meaning something else. It is the grid the bar fitting, the loop seam
+fold, and the sidechain's kick spacing are all measured against, which is why it
+sits in its own row rather than in a corner of the length row.
+
 ## Where the cuts land
 
 The chopper has two grids and they do different jobs. `resolution` decides where

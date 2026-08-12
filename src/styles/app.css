@@ -1666,3 +1666,67 @@
   align-items: center;
   gap: var(--sp-2);
 }
+
+/* --- tempo -------------------------------------------------------------
+ *
+ * Its own row rather than a corner of the length row, because it is the value
+ * everything else on the page is measured against: the bar fitting, the loop
+ * seam, and the sidechain's kick grid all read it.
+ */
+.tempo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border: var(--edge) solid var(--hairline);
+  background: var(--ground-raised);
+}
+
+.tempo__title {
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+}
+
+.tempo__row {
+  display: flex;
+  flex-wrap: wrap;
+  border: var(--edge) solid var(--hairline-strong);
+}
+
+.tempo__num {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.tempo__num input {
+  width: 4.5rem;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  background: var(--ground-sunken);
+  border: var(--edge) solid var(--hairline-strong);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+}
+
+.tempo__hint {
+  margin-left: auto;
+  font-size: var(--step--2);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .tempo__hint {
+    margin-left: 0;
+  }
+}

@@ -36,7 +36,8 @@ import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample, type GeneratorId } from './audio/generate'
 import {
   BAR_CHOICES,
-  BPM,
+  BPM_CHOICES,
+  DEFAULT_BPM,
   NO_FIT,
   barLabel,
   describeLength,
@@ -169,6 +170,8 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
   const [loop, setLoop] = useState(true)
   const [level, setLevel] = useState(0)
   const [monitor, setMonitor] = useState(1)
+  /** The grid everything here is measured against. 120 unless you say otherwise. */
+  const [bpm, setBpm] = useState<number>(DEFAULT_BPM)
   const [sidechain, setSidechain] = useState<SidechainSpec>(DEFAULT_SIDECHAIN)
   const [kickAudible, setKickAudible] = useState(false)
   /**
@@ -237,8 +240,8 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
    */
   const mangled = useMemo(
     () =>
-      result ? applyLevel(applySidechain(result.pcm, sidechain, BPM), level) : null,
-    [result, sidechain, level],
+      result ? applyLevel(applySidechain(result.pcm, sidechain, bpm), level) : null,
+    [result, sidechain, level, bpm],
   )
 
   /**
@@ -249,9 +252,9 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
     (position: number) => {
       if (!result) return 1
       const seconds = position * durationOf(result.pcm)
-      return levelGain(level) * duckGainAt(seconds, sidechain, BPM)
+      return levelGain(level) * duckGainAt(seconds, sidechain, bpm)
     },
-    [result, level, sidechain],
+    [result, level, sidechain, bpm],
   )
 
   /** The reference kick, rendered to match the output so looping stays locked. */
@@ -260,10 +263,10 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
     return renderKick(
       result.pcm.sampleRate,
       durationOf(result.pcm),
-      BPM,
+      bpm,
       sidechain.rate,
     )
-  }, [kickAudible, result, sidechain.rate])
+  }, [kickAudible, result, sidechain.rate, bpm])
 
   // Monitor is a live node parameter, so it applies to whatever is already
   // playing rather than waiting for the next press of play.
@@ -375,7 +378,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       // Snap to the nearest musical length so the first roll is already on the
       // grid and loopable, rather than an arbitrary tail you have to fix.
       const bars = nearestBars(durationOf(pcm))
-      const nextFit: FitSpec = { bars, mode: 'trim' }
+      const nextFit: FitSpec = { bars, mode: 'trim', bpm }
       setFit(nextFit)
       fitRef.current = nextFit
       rollCount.current = 0
@@ -632,6 +635,25 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       void runRender(next)
     },
     [runRender],
+  )
+
+  /**
+   * Change the grid.
+   *
+   * A bar is a number of seconds, so moving the tempo changes what "2 bars"
+   * means and the current result is the wrong length until it is rebuilt. The
+   * bar *count* is kept and the seconds follow, which is what you want: you
+   * picked 2 bars, not 4 seconds.
+   */
+  const changeBpm = useCallback(
+    (next: number) => {
+      setBpm(next)
+      const nextFit: FitSpec = { ...fitRef.current, bpm: next }
+      setFit(nextFit)
+      fitRef.current = nextFit
+      if (chain) void runRender(chain)
+    },
+    [chain, runRender],
   )
 
   /** Step through past rolls. Re-renders, so it costs a render not a buffer. */
@@ -1203,7 +1225,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
             <Sidechain
               spec={sidechain}
               kickAudible={kickAudible}
-              bpm={BPM}
+              bpm={bpm}
               disabled={busy}
               onChange={setSidechain}
               onKickAudible={setKickAudible}
@@ -1216,11 +1238,49 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
               onLevel={setLevel}
               onMonitor={setMonitor}
             />
+            {/* Tempo. Everything on this page is measured against it: the bar
+                fitting, the loop seam, and the sidechain's kick grid. */}
+            <section className="tempo" aria-label="Tempo">
+              <span className="tempo__title">tempo</span>
+              <div className="tempo__row" role="group" aria-label="Tempo in bpm">
+                {BPM_CHOICES.map((choice) => (
+                  <button
+                    key={choice}
+                    type="button"
+                    className="len__opt"
+                    aria-pressed={bpm === choice}
+                    disabled={busy}
+                    onClick={() => changeBpm(choice)}
+                  >
+                    {choice}
+                  </button>
+                ))}
+              </div>
+              <label className="tempo__num">
+                <input
+                  type="number"
+                  min={40}
+                  max={220}
+                  step={1}
+                  value={bpm}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const next = Number(e.target.value)
+                    if (Number.isFinite(next) && next >= 40 && next <= 220) changeBpm(next)
+                  }}
+                />
+                <span>bpm</span>
+              </label>
+              <span className="tempo__hint">
+                {result ? describeLength(durationOf(result.pcm), bpm) : `${bpm} bpm grid`}
+              </span>
+            </section>
+
             <section className="len" aria-label="Output length">
               <div className="len__head">
                 <span className="len__title">length</span>
                 <span className="len__now">
-                  {result ? describeLength(durationOf(result.pcm)) : ''}
+                  {result ? describeLength(durationOf(result.pcm), bpm) : ''}
                   {mangledRegion && result
                     ? ` · exporting ${regionSeconds(mangledRegion, durationOf(result.pcm)).toFixed(2)}s`
                     : ''}

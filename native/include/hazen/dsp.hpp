@@ -102,9 +102,21 @@ class Reverb {
   void set_decay(float decay) { decay_ = std::clamp(decay, 0.0f, 0.98f); }
   void set_mix(float mix) { mix_ = std::clamp(mix, 0.0f, 1.0f); }
 
+  /// One-pole lowpass inside the comb feedback, which is what makes a tail get
+  /// darker as it decays instead of ringing bright forever. Matches the damping
+  /// control the web build exposes on its reverb.
+  void set_damp(float hz, double sample_rate) {
+    const double f = std::clamp(static_cast<double>(hz), 200.0, 18000.0);
+    // Standard one-pole coefficient. At 18kHz this is near unity, so the top of
+    // the range is effectively undamped rather than a special case.
+    const double x = std::exp(-2.0 * 3.14159265358979 * f / sample_rate);
+    damp_ = static_cast<float>(std::clamp(x, 0.0, 0.98));
+  }
+
   void reset() {
     for (auto& b : combs_) std::fill(b.begin(), b.end(), 0.0f);
     for (auto& b : allpass_) std::fill(b.begin(), b.end(), 0.0f);
+    std::fill(std::begin(store_), std::end(store_), 0.0f);
   }
 
   float process(float x) {
@@ -112,7 +124,10 @@ class Reverb {
     for (int i = 0; i < 4; ++i) {
       auto& buf = combs_[i];
       const float y = buf[comb_at_[i]];
-      buf[comb_at_[i]] = x + y * decay_;
+      // Damping filters the signal on its way back into the delay, so each pass
+      // round the comb loses a little more top end.
+      store_[i] = y * (1.0f - damp_) + store_[i] * damp_;
+      buf[comb_at_[i]] = x + store_[i] * decay_;
       comb_at_[i] = (comb_at_[i] + 1) % buf.size();
       wet += y * 0.25f;
     }
@@ -132,7 +147,9 @@ class Reverb {
   std::vector<float> allpass_[2];
   std::size_t comb_at_[4]{};
   std::size_t allpass_at_[2]{};
+  float store_[4]{};
   float decay_ = 0.8f;
+  float damp_ = 0.2f;
   float mix_ = 0.3f;
 };
 

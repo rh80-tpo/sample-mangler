@@ -39,6 +39,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout HazenSamplerProcessor::layou
   p.add(std::make_unique<AudioParameterChoice>(ParameterID{"mode", 1}, "Mode",
                                                StringArray{kModes, 2}, 0));
   p.add(std::make_unique<AudioParameterBool>(ParameterID{"sync", 1}, "Sync to host", true));
+  // Adjustable, defaulting to 120. Used whenever sync is off; with sync on the
+  // host's tempo wins, because a sampler in a DAW has no business inventing its
+  // own clock.
+  p.add(std::make_unique<AudioParameterFloat>(ParameterID{"tempo", 1}, "Tempo",
+                                              NormalisableRange<float>{40.0f, 220.0f, 1.0f}, 120.0f));
 
   // --- mangle ---
   p.add(std::make_unique<AudioParameterBool>(ParameterID{"revon", 1}, "Reverse", false));
@@ -59,6 +64,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout HazenSamplerProcessor::layou
   p.add(pct("drive", "Drive amount", 0.4f));
   p.add(std::make_unique<AudioParameterBool>(ParameterID{"verbon", 1}, "Reverb", false));
   p.add(pct("verbsize", "Reverb size", 0.6f));
+  p.add(std::make_unique<AudioParameterFloat>(
+      ParameterID{"verbdamp", 1}, "Reverb damp",
+      NormalisableRange<float>{200.0f, 18000.0f, 50.0f, 0.42f}, 4000.0f));
   p.add(pct("verbmix", "Reverb mix", 0.4f));
   p.add(std::make_unique<AudioParameterChoice>(ParameterID{"bars", 1}, "Bars",
                                                StringArray{kBars, 5}, 1));
@@ -158,6 +166,9 @@ void HazenSamplerProcessor::readParameters() {
 
   modeIndex = static_cast<int>(raw("mode"));
   syncToHost = flag("sync");
+  // With sync off the knob is the grid. With it on, processBlock has already
+  // pushed the host's tempo into hostBpm.
+  if (!syncToHost) hostBpm = static_cast<double>(raw("tempo"));
 
   mangle.reverse_on = flag("revon");
   mangle.chop_on = flag("chopon");
@@ -175,6 +186,7 @@ void HazenSamplerProcessor::readParameters() {
   mangle.drive = raw("drive");
   mangle.verb_on = flag("verbon");
   mangle.verb_size = raw("verbsize");
+  mangle.verb_damp = raw("verbdamp");
   mangle.verb_mix = raw("verbmix");
   mangle.seed = 1;
   barsWanted = barsFor(static_cast<int>(raw("bars")));
@@ -218,9 +230,11 @@ void HazenSamplerProcessor::renderNow() {
 
   hazen::Audio out;
   juce::String note;
+  std::vector<hazen::Voice> builtVoices;
   if (modeIndex == 1) {
     const auto chopped = hazen::build_chop(input, chopping);
     out = chopped.audio;
+    builtVoices = chopped.voices;
     note = juce::String(chopped.bars) + " bars · " + juce::String(chopped.slice_count) +
            (chopping.cut_per_bar > 0 ? " slices on a grid" : " slices from transients");
   } else {
@@ -236,6 +250,7 @@ void HazenSamplerProcessor::renderNow() {
   {
     const juce::ScopedLock sl(audioLock);
     rendered = std::move(out);
+    voices = std::move(builtVoices);
     statusText = loadedName.isEmpty() ? note : loadedName + " · " + note;
   }
   rendering.store(false);
@@ -373,6 +388,109 @@ void HazenSamplerProcessor::setStateInformation(const void* data, int size) {
     params.replaceState(juce::ValueTree::fromXml(*xml));
     invalidate();
   }
+}
+
+/**
+ * Roll a random chain.
+ *
+ * Weighted the way the web build weights its pool, and with the same restraint:
+ * drive and bitcrush are the two effects that flatter themselves and wreck
+ * everything else, so they come up less and are capped when they land together.
+ * A roll that always sounds like clipping is not a roll, it is a preset.
+ */
+void HazenSamplerProcessor::reroll() {
+  auto set = [this](const char* id, float value) {
+    if (auto* p = params.getParameter(id)) {
+      p->beginChangeGesture();
+      p->setValueNotifyingHost(p->convertTo0to1(value));
+      p->endChangeGesture();
+    }
+  };
+  auto chance = [this](float odds) { return dice.nextFloat() < odds; };
+  auto between = [this](float lo, float hi) { return lo + dice.nextFloat() * (hi - lo); };
+
+  const bool wantChop = chance(0.62f);
+  const bool wantPitch = chance(0.58f);
+  const bool wantReverse = chance(0.54f);
+  const bool wantVerb = chance(0.52f);
+  bool wantDrive = chance(0.24f);
+  bool wantCrush = chance(0.22f);
+
+  // Never an empty chain: an effect that does nothing is not a result.
+  if (!(wantChop || wantPitch || wantReverse || wantVerb || wantDrive || wantCrush)) {
+    set("chopon", 1.0f);
+  }
+
+  set("revon", wantReverse ? 1.0f : 0.0f);
+  set("chopon", wantChop ? 1.0f : 0.0f);
+  if (wantChop) {
+    set("segments", std::round(between(4.0f, 40.0f)));
+    set("scatter", between(0.1f, 0.8f));
+    set("stutter", between(0.12f, 0.45f));
+    set("gate", between(0.0f, 0.35f));
+  }
+  set("pitchon", wantPitch ? 1.0f : 0.0f);
+  if (wantPitch) {
+    // Whole semitones most of the time, so it stays in key more often than not.
+    const float steps[] = {-12.0f, -7.0f, -5.0f, -3.0f, 3.0f, 5.0f, 7.0f, 12.0f};
+    set("semitones", steps[dice.nextInt(8)]);
+    set("grain", between(0.03f, 0.12f));
+  }
+  set("verbon", wantVerb ? 1.0f : 0.0f);
+  if (wantVerb) {
+    set("verbsize", between(0.3f, 0.9f));
+    set("verbdamp", between(900.0f, 12000.0f));
+    set("verbmix", between(0.2f, 0.6f));
+  }
+  set("driveon", wantDrive ? 1.0f : 0.0f);
+  set("crushon", wantCrush ? 1.0f : 0.0f);
+  if (wantDrive && wantCrush) {
+    // Both at once is the combination that eats everything else.
+    set("drive", between(0.15f, 0.45f));
+    set("bits", std::round(between(8.0f, 14.0f)));
+    set("divisor", std::round(between(2.0f, 8.0f)));
+  } else {
+    if (wantDrive) set("drive", between(0.2f, 0.7f));
+    if (wantCrush) {
+      set("bits", std::round(between(4.0f, 12.0f)));
+      set("divisor", std::round(between(1.0f, 16.0f)));
+    }
+  }
+
+  // Remember it, and drop anything we had stepped past.
+  if (!rolls.empty() && rollAt + 1 < rolls.size()) rolls.resize(rollAt + 1);
+  rolls.push_back(params.copyState().createCopy());
+  if (rolls.size() > 24) rolls.erase(rolls.begin());
+  rollAt = rolls.size() - 1;
+  invalidate();
+}
+
+bool HazenSamplerProcessor::stepRoll(int delta) {
+  if (rolls.empty()) return false;
+  const auto want = static_cast<std::ptrdiff_t>(rollAt) + delta;
+  if (want < 0 || want >= static_cast<std::ptrdiff_t>(rolls.size())) return false;
+  rollAt = static_cast<std::size_t>(want);
+  params.replaceState(rolls[rollAt].createCopy());
+  invalidate();
+  return true;
+}
+
+std::vector<float> HazenSamplerProcessor::voiceStarts() const {
+  std::vector<float> out;
+  const juce::ScopedLock sl(audioLock);
+  if (rendered.frames() == 0) return out;
+  out.reserve(voices.size());
+  for (const auto& v : voices)
+    out.push_back(static_cast<float>(v.start) / static_cast<float>(rendered.frames()));
+  return out;
+}
+
+std::vector<int> HazenSamplerProcessor::voiceSlices() const {
+  std::vector<int> out;
+  const juce::ScopedLock sl(audioLock);
+  out.reserve(voices.size());
+  for (const auto& v : voices) out.push_back(v.slice);
+  return out;
 }
 
 juce::AudioProcessorEditor* HazenSamplerProcessor::createEditor() {

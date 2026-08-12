@@ -210,9 +210,8 @@ struct MangleSettings {
   float drive = 0.4f;
 
   bool verb_on = false;
-  /// Feeds Reverb::set_decay. The C++ core has no damping control, so the
-  /// plugin does not offer one rather than showing a knob that does nothing.
   float verb_size = 0.6f;
+  float verb_damp = 4000.0f;
   float verb_mix = 0.4f;
 
   std::uint32_t seed = 1;
@@ -252,6 +251,7 @@ inline void run_mangle(Audio& audio, const MangleSettings& s) {
       Reverb verb;
       verb.prepare(audio.sample_rate);
       verb.set_decay(s.verb_size);
+      verb.set_damp(s.verb_damp, audio.sample_rate);
       verb.set_mix(s.verb_mix);
       // `process` already returns the dry/wet blend, so there is no second mix
       // here — doing it again would halve the dry signal.

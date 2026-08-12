@@ -1,13 +1,24 @@
 import type { Pcm } from './buffers'
 
 /**
- * Everything on the site is read against one tempo. The whole point of a
- * sampler tool is that what comes out drops into a session on the grid, and
- * guessing a sample's tempo from its content is a different product.
+ * Tempo. Adjustable, defaulting to 120.
+ *
+ * It used to be a hard constant, on the reasoning that a sampler's output has to
+ * land on a grid and guessing a source's tempo is a different product. The first
+ * half of that still holds; the second turned out to be the wrong conclusion. A
+ * producer working at 140 or 174 could not use the bar fitting at all, and the
+ * chopper already had its own tempo, so the two halves of the tool disagreed.
+ *
+ * 120 stays the default because it is the value most of this was designed
+ * around, and because a tempo you did not choose should be the common one.
  */
-export const BPM = 120
-export const SECONDS_PER_BEAT = 60 / BPM
-export const SECONDS_PER_BAR = SECONDS_PER_BEAT * 4
+export const DEFAULT_BPM = 120
+
+/** Tempos worth one tap, matching the chopper's row. */
+export const BPM_CHOICES = [90, 100, 110, 120, 128, 140, 150, 174] as const
+
+export const secondsPerBeat = (bpm: number = DEFAULT_BPM) => 60 / bpm
+export const secondsPerBar = (bpm: number = DEFAULT_BPM) => secondsPerBeat(bpm) * 4
 
 /** Bar lengths worth offering. Below an eighth of a bar it is a one-shot. */
 export const BAR_CHOICES = [0.25, 0.5, 1, 2, 4, 8, 16] as const
@@ -18,9 +29,11 @@ export type FitSpec = {
   /** null means leave the length exactly as the chain produced it. */
   bars: number | null
   mode: FitMode
+  /** The grid the bar count is measured against. */
+  bpm: number
 }
 
-export const NO_FIT: FitSpec = { bars: null, mode: 'trim' }
+export const NO_FIT: FitSpec = { bars: null, mode: 'trim', bpm: DEFAULT_BPM }
 
 /**
  * The nearest bar length worth snapping a sample to.
@@ -30,8 +43,8 @@ export const NO_FIT: FitSpec = { bars: null, mode: 'trim' }
  * you hear already sits in a session, and "as is" is there for when you want
  * the raw tail back.
  */
-export function nearestBars(seconds: number): number {
-  const bars = barsOf(seconds)
+export function nearestBars(seconds: number, bpm: number = DEFAULT_BPM): number {
+  const bars = barsOf(seconds, bpm)
   let best: number = BAR_CHOICES[0]
   let bestGap = Infinity
   for (const choice of BAR_CHOICES) {
@@ -46,20 +59,20 @@ export function nearestBars(seconds: number): number {
   return best
 }
 
-export function barsOf(seconds: number): number {
-  return seconds / SECONDS_PER_BAR
+export function barsOf(seconds: number, bpm: number = DEFAULT_BPM): number {
+  return seconds / secondsPerBar(bpm)
 }
 
 /** "2 bars" or "1.5 beats", whichever reads better at that length. */
-export function describeLength(seconds: number): string {
-  const bars = barsOf(seconds)
+export function describeLength(seconds: number, bpm: number = DEFAULT_BPM): string {
+  const bars = barsOf(seconds, bpm)
   if (bars >= 1) {
     const rounded = Math.round(bars * 100) / 100
-    return `${rounded} ${rounded === 1 ? 'bar' : 'bars'} @ ${BPM}`
+    return `${rounded} ${rounded === 1 ? 'bar' : 'bars'} @ ${bpm}`
   }
-  const beats = seconds / SECONDS_PER_BEAT
+  const beats = seconds / secondsPerBeat(bpm)
   const rounded = Math.round(beats * 100) / 100
-  return `${rounded} ${rounded === 1 ? 'beat' : 'beats'} @ ${BPM}`
+  return `${rounded} ${rounded === 1 ? 'beat' : 'beats'} @ ${bpm}`
 }
 
 export function barLabel(bars: number): string {

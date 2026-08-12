@@ -17,6 +17,7 @@ import {
   describeFile,
 } from './audio/decode'
 import { freshSeed } from './audio/rng'
+import { rollChain } from './audio/chain'
 import { encodeWav } from './audio/wav'
 import {
   DEFAULT_CHOP,
@@ -194,41 +195,6 @@ export function Chopper() {
     [playback],
   )
 
-  const chop = useCallback(async () => {
-    if (!source || busy) return
-    setBusy(true)
-    setError('')
-    playback.stop()
-    setPlaying(false)
-    setPlayhead(null)
-    try {
-      await new Promise((r) => setTimeout(r, 0))
-      const built = buildChop(source, {
-        bpm,
-        pattern,
-        density,
-        variation,
-        resolution,
-        inOrder,
-        phraseBars,
-        hold,
-        quantize,
-        seed: freshSeed(),
-      })
-      setResult(built)
-      setCursor(0)
-      if (built.slices < 2) {
-        setError(
-          'only found one transient. try a more percussive vocal, or one with clearer consonants.',
-        )
-      }
-    } catch (e) {
-      setError(e instanceof Error ? `chop failed. ${e.message}` : 'chop failed.')
-    } finally {
-      setBusy(false)
-    }
-  }, [source, busy, playback, bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold, quantize])
-
   // --- the rack --------------------------------------------------------
   // Effects are applied to the finished chop rather than the vocal, so the
   // arrangement stays intact and the chain colours the whole loop.
@@ -238,8 +204,11 @@ export function Chopper() {
   })
 
   const runChain = useCallback(
-    async (next: ChainSpec | null) => {
-      const base = result?.pcm
+    async (next: ChainSpec | null, baseOverride?: Pcm) => {
+      // `baseOverride` exists so a chop and a roll can happen in one press: the
+      // freshly built loop is passed in directly rather than waiting for the
+      // state holding it to commit.
+      const base = baseOverride ?? result?.pcm
       if (!base) return
       if (!next || next.effects.length === 0) {
         setProcessed(null)
@@ -266,6 +235,64 @@ export function Chopper() {
     },
     [result],
   )
+
+  /**
+   * Build the loop. Optionally roll a random rack over it in the same press.
+   *
+   * `rollRack` is what makes the second button worth having. The mangler's
+   * reroll is the fastest way it has to find something, and the chopper had no
+   * equivalent: you could rechop the rhythm, or tweak the rack by hand, but not
+   * gamble on both at once. The rolled chain is applied to the loop that was
+   * just built rather than to the one in state, because state has not committed
+   * yet inside this callback.
+   */
+  const runChop = useCallback(
+    async (rollRack: boolean) => {
+      if (!source || busy) return
+      setBusy(true)
+      setError('')
+      playback.stop()
+      setPlaying(false)
+      setPlayhead(null)
+      try {
+        await new Promise((r) => setTimeout(r, 0))
+        const built = buildChop(source, {
+          bpm,
+          pattern,
+          density,
+          variation,
+          resolution,
+          inOrder,
+          phraseBars,
+          hold,
+          quantize,
+          seed: freshSeed(),
+        })
+        setResult(built)
+        setCursor(0)
+        if (built.slices < 2) {
+          setError(
+            'only found one transient. try a more percussive vocal, or one with clearer consonants.',
+          )
+        }
+        if (rollRack) {
+          const rolled = rollChain(freshSeed(), durationOf(built.pcm))
+          setChain(rolled)
+          await runChain(rolled, built.pcm)
+        }
+      } catch (e) {
+        setError(e instanceof Error ? `chop failed. ${e.message}` : 'chop failed.')
+      } finally {
+        setBusy(false)
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [source, busy, playback, bpm, pattern, density, variation, resolution, inOrder, phraseBars, hold, quantize, runChain],
+  )
+
+  const chop = useCallback(() => runChop(false), [runChop])
+  const chopAndRoll = useCallback(() => runChop(true), [runChop])
+
 
   // A fresh chop invalidates whatever the rack had produced.
   useEffect(() => {
@@ -746,6 +773,17 @@ export function Chopper() {
           disabled={!source || busy}
         >
           <span className="btn__slabtext">{busy ? 'chopping' : result ? 'rechop' : 'chop'}</span>
+        </button>
+        {/* Rechop and roll a rack in one press. The rhythm and the treatment are
+            the two things you would otherwise gamble on separately. */}
+        <button
+          type="button"
+          className="btn"
+          onClick={() => void chopAndRoll()}
+          disabled={!source || busy}
+          title="Rechop and roll a random set of effects over it"
+        >
+          rechop + mangle
         </button>
         <button
           type="button"

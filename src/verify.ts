@@ -20,6 +20,7 @@ import {
   type Pcm,
 } from './audio/buffers'
 import { renderChain } from './audio/render'
+import { DEFAULT_BPM } from './audio/fit'
 import { encodeWav, QUANTISATION_STEP } from './audio/wav'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
@@ -330,8 +331,8 @@ async function run() {
     let worstName = ''
     let worstDelta = 0
     for (const c of cases) {
-      const a = await renderChain(original, c.chain, { bars: 2, mode: 'trim' })
-      const b = await renderChain(original, c.chain, { bars: 2, mode: 'trim' })
+      const a = await renderChain(original, c.chain, { bars: 2, mode: 'trim', bpm: DEFAULT_BPM })
+      const b = await renderChain(original, c.chain, { bars: 2, mode: 'trim', bpm: DEFAULT_BPM })
       const sameLength = a.pcm.channels[0].length === b.pcm.channels[0].length
       const { diff } = maxDiff(a.pcm, b.pcm)
       if (diff > worstDelta) {
@@ -913,7 +914,7 @@ async function run() {
       for (let i = 0; i < ROUNDS; i++) {
         const bars = [0.5, 1, 2][i % 3]
         const chain = rollChain(freshSeed(), durationOf(src))
-        const { pcm } = await renderChain(src, chain, { bars, mode: 'trim' })
+        const { pcm } = await renderChain(src, chain, { bars, mode: 'trim', bpm: DEFAULT_BPM })
         const r = rmsOf(pcm)
         quietest = Math.min(quietest, r)
         if (r < 0.004) {
@@ -955,7 +956,7 @@ async function run() {
 
         for (const seed of SEAM_SEEDS) {
           const chain = rollChain(seed, durationOf(original))
-          const { pcm } = await renderChain(original, chain, { bars, mode })
+          const { pcm } = await renderChain(original, chain, { bars, mode, bpm: DEFAULT_BPM })
           const seconds = durationOf(pcm)
           const wanted = bars * 2 // 120bpm, 4/4
 
@@ -1028,7 +1029,7 @@ async function run() {
         seed: 1,
         effects: [{ id: 'reverse', enabled: false }],
       }
-      const { pcm } = await renderChain(steady, bypassed, { bars: 1, mode: 'trim' })
+      const { pcm } = await renderChain(steady, bypassed, { bars: 1, mode: 'trim', bpm: DEFAULT_BPM })
       const ch = pcm.channels[0]
       // Several cycles wide. A 64 sample window at 220Hz covers a third of one
       // cycle, so it reads low or high purely on where the phase starts, which
