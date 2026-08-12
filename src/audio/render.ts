@@ -2,8 +2,8 @@ import * as Tone from 'tone'
 import { planOps, planPasses } from './chain'
 import {
   applyEdgeFades,
-  applyLoopSeam,
   clonePcm,
+  foldLoopSeam,
   durationOf,
   normalizeInPlace,
   pcmFrom,
@@ -22,6 +22,9 @@ import {
   type FitSpec,
 } from './fit'
 import type { ChainSpec, EffectSpec, Op } from './types'
+
+/** Overrun kept past a bar length, then folded back to make the loop join. */
+const SEAM_SECONDS = 0.012
 
 /**
  * Extra render time so a pass is not cut off mid-tail.
@@ -223,19 +226,19 @@ export async function renderChain(
     if (fit.mode === 'trim') {
       const untrimmed = pcm
       const hadSignal = peakOf(untrimmed) >= 1e-4
-      const head = trimTo(untrimmed, target)
-      // If cutting from the head landed on dead air, take the loudest window
-      // of the same length out of the original instead of handing back silence.
+      // Keep an overrun past the target so the seam has real material to fold
+      // back over the head. Without it a loop can only be faded, not joined.
+      const head = trimTo(untrimmed, target + SEAM_SECONDS)
       pcm =
         hadSignal && peakOf(head) < 1e-4
-          ? trimToLoudest(untrimmed, target)
+          ? trimToLoudest(untrimmed, target + SEAM_SECONDS)
           : head
     } else {
-      pcm = resampleTo(pcm, target)
+      pcm = resampleTo(pcm, target + SEAM_SECONDS)
       if (fit.mode === 'fit') {
         // Resampling moved the pitch along with the length. Shift it back so
         // only the duration changed.
-        const semitones = compensationSemitones(before, target)
+        const semitones = compensationSemitones(before, target + SEAM_SECONDS)
         if (Math.abs(semitones) > 0.02) {
           pcm = await renderNodePass(pcm, [
             {
@@ -249,20 +252,20 @@ export async function renderChain(
             },
           ])
           // The shifter adds a tail; the length is the whole point here.
-          pcm = trimTo(pcm, target)
+          pcm = trimTo(pcm, target + SEAM_SECONDS)
         }
       }
     }
   }
-  pcm = normalizeInPlace(pcm)
-
-  // A result cut to a bar length exists to be looped, so its ends are joined
-  // to each other instead of faded to silence. Left at its natural length it
-  // is a one-shot, and gets ordinary edge fades.
+  // A result cut to a bar length exists to be looped, so the overrun is folded
+  // back over the head and the buffer joins to itself. No edge fade: fading to
+  // silence at both ends is a gap, not a seam. Left at its natural length it is
+  // a one-shot, and gets ordinary edge fades.
   if (fit.bars !== null) {
-    pcm = applyLoopSeam(pcm)
-    pcm = applyEdgeFades(pcm, 0.0015)
+    pcm = foldLoopSeam(pcm, Math.round(fit.bars * SECONDS_PER_BAR * pcm.sampleRate))
+    pcm = normalizeInPlace(pcm)
   } else {
+    pcm = normalizeInPlace(pcm)
     pcm = applyEdgeFades(pcm)
   }
 

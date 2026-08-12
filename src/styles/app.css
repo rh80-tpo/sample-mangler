@@ -88,6 +88,193 @@
   border-color: var(--signal);
 }
 
+/* ---------------------------------------------------------------- shell */
+
+.shell {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: clamp(var(--sp-4), 2.4vw, var(--sp-6));
+  gap: clamp(var(--sp-3), 1.6vh, var(--sp-5));
+  position: relative;
+  isolation: isolate;
+}
+
+.shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--grid) 0 1px,
+    transparent 1px 88px
+  );
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.shell__bar {
+  max-width: 1500px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  border-bottom: var(--edge) solid var(--hairline);
+  padding-bottom: var(--sp-3);
+}
+
+.shell__nav {
+  display: flex;
+  gap: var(--edge);
+  border: var(--edge) solid var(--hairline-strong);
+}
+
+.shell__tab {
+  min-height: 34px;
+  padding: 0 var(--sp-4);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  transition: color var(--dur-fast) var(--ease-snap),
+    background-color var(--dur-fast) var(--ease-snap);
+}
+
+.shell__tab + .shell__tab {
+  border-left: var(--edge) solid var(--hairline-strong);
+}
+
+.shell__tab[aria-current='page'] {
+  background: var(--signal);
+  color: var(--ground);
+}
+
+.shell__tab:hover:not([aria-current='page']) {
+  color: var(--ink);
+}
+
+/* Inside the shell the app no longer owns the page frame. */
+.shell .app {
+  min-height: 0;
+  padding: 0;
+  display: block;
+}
+
+.shell .app::before {
+  display: none;
+}
+
+.bar__spacer {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- chopper */
+
+.chop {
+  min-height: 0;
+  max-width: 1500px;
+  width: 100%;
+  margin: 0 auto;
+  display: grid;
+  grid-template-rows: minmax(240px, 1fr) auto auto auto;
+  gap: clamp(var(--sp-2), 1.4vh, var(--sp-4));
+}
+
+.chop--dragging .wave__canvas {
+  border-color: var(--signal);
+  background: var(--signal-wash);
+}
+
+.chopctl {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: var(--edge) solid var(--hairline);
+  background: var(--ground-raised);
+}
+
+.chopctl__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.chopctl__title {
+  flex: 0 0 4.5rem;
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+}
+
+.chopctl__hint {
+  font-size: var(--step--2);
+  color: var(--ink-faint);
+}
+
+.chopctl__num {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.chopctl__num input {
+  width: 5rem;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  background: var(--ground-sunken);
+  border: var(--edge) solid var(--hairline-strong);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step--1);
+  font-variant-numeric: tabular-nums;
+}
+
+.chopctl__num input:focus {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+.chopctl__slider {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.chopctl__slider input {
+  width: 8rem;
+  accent-color: var(--signal);
+}
+
+.chopctl__slider b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.2ch;
+  text-align: right;
+}
+
+.chopctl__order[aria-pressed='true'] {
+  background: var(--signal);
+  color: var(--ground);
+}
+
+.chopctl__order {
+  border: var(--edge) solid var(--hairline-strong);
+}
+
 /* ---------------------------------------------------------------- header */
 
 .bar {

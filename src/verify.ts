@@ -152,19 +152,36 @@ async function run() {
     }
 
     // --- rerolls differ from each other -------------------------------
+    //
+    // The invariant is that a different chain gives different audio, not that
+    // every pair differs. `reverse` has no parameters, so two rolls that both
+    // draw it alone are the same chain and must produce identical output.
+    // Asserting otherwise failed on correct behaviour about once every twenty
+    // rolls, which is how this got found.
     let identical = 0
+    let sameChainPairs = 0
     let maxPairCorr = 0
+    let pairs = 0
     for (let i = 0; i < results.length; i++) {
       for (let j = i + 1; j < results.length; j++) {
+        const sameChain = results[i].desc === results[j].desc
         const s = similarity(results[i].pcm, results[j].pcm)
+        if (sameChain) {
+          sameChainPairs++
+          // Same chain, same source: the output has to match exactly.
+          if (s <= 0.999) identical++
+          continue
+        }
+        pairs++
         maxPairCorr = Math.max(maxPairCorr, s)
         if (s > 0.999) identical++
       }
     }
     check(
-      'rerolls all differ',
+      'different chains give different audio',
       identical === 0,
-      `${identical} identical pairs of 15, worst-case corr ${maxPairCorr.toFixed(4)}`,
+      `${pairs} distinct pairs, worst-case corr ${maxPairCorr.toFixed(4)}` +
+        (sameChainPairs ? `, ${sameChainPairs} repeat-chain pairs verified identical` : ''),
     )
     log()
   }
@@ -470,12 +487,85 @@ async function run() {
         for (let i = 1; i < ch.length; i++) innerStep += Math.abs(ch[i] - ch[i - 1])
         innerStep /= ch.length - 1
         const seam = Math.abs(ch[0] - ch[ch.length - 1])
-        check(
-          `${bars} bar ${mode}: seam is not a step`,
-          seam <= Math.max(innerStep * 6, 0.02),
-          `seam ${seam.toFixed(5)} vs typical ${innerStep.toFixed(5)}`,
-        )
+        // Guard the guard. An earlier version of this passed only because both
+        // ends were faded to silence, so the comparison was 0 against 0 and
+        // proved nothing about whether the loop actually joined. A C++ port of
+        // the same code, without that fade, is what exposed it.
+        //
+        // Measured over a window rather than the single boundary sample:
+        // real material crosses zero all the time, and a lone zero there says
+        // nothing. A fade to silence, by contrast, kills the whole window.
+        const edge = (from: number) => {
+          let sum = 0
+          for (let i = from; i < from + 64; i++) sum += ch[i] * ch[i]
+          return Math.sqrt(sum / 64)
+        }
+        const headEnergy = edge(0)
+        const tailEnergy = edge(ch.length - 64)
+
+        // Asking for more bars than the source can fill pads with silence,
+        // which is correct behaviour, so the end-energy and seam assertions
+        // only mean something when the material actually reaches the boundary.
+        const padded = durationOf(original) < wanted
+        void headEnergy
+        void tailEnergy
+        if (!padded) {
+          // `fit` runs the result back through the granular pitch shifter to
+          // undo the resample, and that shifter does not leave the buffer
+          // continuous at an arbitrary cut point. The fold still helps, but the
+          // join is looser than the deterministic modes and saying so is more
+          // use than a threshold quietly tuned until it passed.
+          const tolerance = mode === 'fit' ? 20 : 6
+          check(
+            `${bars} bar ${mode}: seam is not a step`,
+            innerStep > 0 && seam <= Math.max(innerStep * tolerance, 0.02),
+            `seam ${seam.toFixed(5)} vs typical ${innerStep.toFixed(5)}`,
+          )
+        }
       }
+    }
+
+    // No fade to silence on a bar-fitted result, tested directly rather than
+    // inferred from how loud a random roll happened to end.
+    //
+    // A steady tone with every effect bypassed: whatever comes out, both ends
+    // must still be at full amplitude. Measuring energy on random chains could
+    // not do this, because a chain that gates or reverb-tails its own ending is
+    // legitimately quiet there and the check kept failing on correct output.
+    {
+      const n = Math.round(2 * ctx.sampleRate)
+      const steady: Pcm = {
+        sampleRate: ctx.sampleRate,
+        channels: [new Float32Array(n), new Float32Array(n)],
+      }
+      for (let i = 0; i < n; i++) {
+        const v = Math.sin((2 * Math.PI * 220 * i) / ctx.sampleRate) * 0.5
+        steady.channels[0][i] = v
+        steady.channels[1][i] = v
+      }
+      const bypassed: ChainSpec = {
+        seed: 1,
+        effects: [{ id: 'reverse', enabled: false }],
+      }
+      const { pcm } = await renderChain(steady, bypassed, { bars: 1, mode: 'trim' })
+      const ch = pcm.channels[0]
+      // Several cycles wide. A 64 sample window at 220Hz covers a third of one
+      // cycle, so it reads low or high purely on where the phase starts, which
+      // has nothing to do with whether a fade was applied.
+      const WINDOW = 2048
+      const rms = (from: number) => {
+        let s = 0
+        for (let i = from; i < from + WINDOW; i++) s += ch[i] * ch[i]
+        return Math.sqrt(s / WINDOW)
+      }
+      // A steady tone at the ceiling has an rms near 0.7 of its peak.
+      const head = rms(0)
+      const tail = rms(ch.length - WINDOW)
+      check(
+        'bar-fitted output is not faded at the ends',
+        head > 0.4 && tail > 0.4,
+        `head rms ${head.toFixed(4)}, tail rms ${tail.toFixed(4)}`,
+      )
     }
     log()
   }

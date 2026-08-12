@@ -32,6 +32,10 @@ type Props = {
   tools?: React.ReactNode
   /** Highlighted tempo readout, for the one number people are matching to. */
   tempo?: string | null
+  /** Phrase boundaries to mark, as bar index plus letter. */
+  sections?: { bar: number; letter: string }[]
+  /** Seconds per bar, needed to place the section marks. */
+  barSeconds?: number
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
@@ -60,6 +64,8 @@ export function Waveform({
   onRegionChange,
   tools,
   tempo,
+  sections,
+  barSeconds,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   // A press is a seek until it travels far enough to be a selection instead.
@@ -196,6 +202,30 @@ export function Waveform({
       ctx.fillRect(headIndex * COL, 0, 2 * dpr, H)
     }
 
+    // Phrase boundaries. Marking where A ends and B begins is what makes an
+    // arrangement pattern legible rather than something you have to count.
+    if (sections && sections.length && barSeconds && pcm) {
+      const totalSeconds = pcm.channels[0].length / pcm.sampleRate
+      ctx.globalAlpha = 1
+      for (const s of sections) {
+        const x = Math.floor(((s.bar * barSeconds) / totalSeconds) * W)
+        if (x <= 0 || x >= W) {
+          // Still label the first phrase even though it has no divider.
+          if (x <= 0) {
+            ctx.fillStyle = v('--ink')
+            ctx.font = `${11 * dpr}px ui-monospace, monospace`
+            ctx.fillText(s.letter, 4 * dpr, 13 * dpr)
+          }
+          continue
+        }
+        ctx.fillStyle = v('--hairline-strong')
+        ctx.fillRect(x, 0, dpr, H)
+        ctx.fillStyle = v('--ink')
+        ctx.font = `${11 * dpr}px ui-monospace, monospace`
+        ctx.fillText(s.letter, x + 4 * dpr, 13 * dpr)
+      }
+    }
+
     // Selected region. Drawn over the waveform as a wash with hard edges, so
     // the boundaries are readable to the sample rather than approximate.
     if (region && region.end > region.start && reveal >= 1) {
@@ -225,7 +255,7 @@ export function Waveform({
     }
 
     ctx.globalAlpha = 1
-  }, [size, pcm, tone, reveal, playhead, active, nonce, region])
+  }, [size, pcm, tone, reveal, playhead, active, nonce, region, sections, barSeconds])
 
   // --- scrubbing and selection ---------------------------------------
   const fractionAt = useCallback((clientX: number) => {

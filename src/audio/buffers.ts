@@ -107,30 +107,42 @@ export function clonePcm(pcm: Pcm): Pcm {
 }
 
 /**
- * Wrap the tail back over the head so the buffer joins to itself.
+ * Fold an overrun back over the head, then cut to length, so the buffer joins
+ * to itself continuously.
  *
- * A hard cut to an exact bar length lands on an arbitrary sample value, and a
- * fade to silence at both ends puts an audible hole at the loop point. This
- * crossfades the last stretch toward what the start sounds like, which is the
- * standard sampler loop crossfade and the difference between a loop you can
- * leave running and one you can hear repeating.
+ * `pcm` must be `target` frames plus an overlap. Those extra frames are the
+ * material that genuinely followed the loop point, so mixing them into the
+ * head means the last sample leads into the first instead of jumping to it.
+ *
+ * An earlier version crossfaded the tail toward the head without any overrun.
+ * That is a real sampler technique but it does not make the join continuous:
+ * the final sample lands on head[fade-1] and then the loop jumps back to
+ * head[0]. It looked fine only because both ends were later faded to silence,
+ * which is a gap rather than a seam. A C++ port of the same function, without
+ * that fade, is what exposed it.
  */
-export function applyLoopSeam(pcm: Pcm, seconds = 0.012): Pcm {
+export function foldLoopSeam(pcm: Pcm, targetFrames: number): Pcm {
   const len = pcm.channels[0].length
-  const n = Math.min(Math.floor(seconds * pcm.sampleRate), Math.floor(len / 4))
-  if (n <= 1) return pcm
-  for (const ch of pcm.channels) {
-    // Snapshot the head first: the blend reads it while writing the tail.
-    const head = ch.slice(0, n)
-    for (let i = 0; i < n; i++) {
-      // Equal power, so the crossfade holds level through the middle.
-      const t = i / (n - 1)
-      const a = Math.cos((t * Math.PI) / 2)
-      const b = Math.sin((t * Math.PI) / 2)
-      ch[len - n + i] = ch[len - n + i] * a + head[i] * b
+  const overlap = Math.min(len - targetFrames, Math.floor(targetFrames / 4))
+  if (overlap <= 1 || targetFrames <= 0) {
+    return {
+      sampleRate: pcm.sampleRate,
+      channels: pcm.channels.map((ch) => ch.slice(0, Math.min(len, targetFrames))),
     }
   }
-  return pcm
+
+  const channels = pcm.channels.map((ch) => {
+    const out = ch.slice(0, targetFrames)
+    for (let i = 0; i < overlap; i++) {
+      // Equal power, so the crossfade holds level through the middle.
+      const t = i / (overlap - 1)
+      const fadeIn = Math.sin((t * Math.PI) / 2)
+      const fadeOut = Math.cos((t * Math.PI) / 2)
+      out[i] = out[i] * fadeIn + ch[targetFrames + i] * fadeOut
+    }
+    return out
+  })
+  return { sampleRate: pcm.sampleRate, channels }
 }
 
 /** Short fades at both ends so playback and looping never click. */

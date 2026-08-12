@@ -100,7 +100,8 @@ function baseName(name: string): string {
   return name.replace(/\.[^.]+$/, '').replace(/[^a-z0-9_-]+/gi, '-').slice(0, 40) || 'sample'
 }
 
-export function App() {
+/** `embedded` hides the wordmark, which the shell already renders. */
+export function App({ embedded = false }: { embedded?: boolean } = {}) {
   const reduceMotion = useReducedMotion()
   const playback = useMemo(() => new Playback(), [])
   const fileInput = useRef<HTMLInputElement>(null)
@@ -878,11 +879,15 @@ export function App() {
     >
       <div className="app__shake" ref={shakeRef}>
         <header className="bar">
-          <h1 className="mark" ref={markRef}>
-            <span className="sr-only">HAZEN sample mangler</span>
-            <Wordmark />
-            <span aria-hidden="true">sample mangler</span>
-          </h1>
+          {embedded ? (
+            <span className="bar__spacer" ref={markRef} />
+          ) : (
+            <h1 className="mark" ref={markRef}>
+              <span className="sr-only">HAZEN sample mangler</span>
+              <Wordmark />
+              <span aria-hidden="true">sample mangler</span>
+            </h1>
+          )}
           <p className="bar__meta">
             {fileName ? (
               <>

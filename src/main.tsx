@@ -8,10 +8,10 @@ import '@fontsource/martian-mono/400.css'
 import '@fontsource/martian-mono/700.css'
 import './styles/tokens.css'
 import './styles/global.css'
-import { App } from './App'
+import { Shell } from './Shell'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <Shell />
   </StrictMode>,
 )
