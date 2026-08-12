@@ -8,6 +8,8 @@ import { pcmToBuffer, type Pcm } from './buffers'
 export class Playback {
   private ctx: AudioContext | null = null
   private source: AudioBufferSourceNode | null = null
+  private monitor: GainNode | null = null
+  private monitorLevel = 1
   private startedAt = 0
   private duration = 0
   private regionStart = 0
@@ -19,6 +21,41 @@ export class Playback {
   private context(): AudioContext {
     if (!this.ctx) this.ctx = new AudioContext()
     return this.ctx
+  }
+
+  /**
+   * The monitoring fader, between the buffer and the speakers.
+   *
+   * This is the one gain in the app that is *not* part of the signal: it never
+   * reaches the Pcm, so it never reaches the exported WAV. That is the point of
+   * it — you can preview a loud chop quietly against a beat without changing
+   * the file. Level, which does bake in, is a separate control.
+   *
+   * Rebuilt with the context, since a rate change replaces the context.
+   */
+  private monitorNode(ctx: AudioContext): GainNode {
+    if (!this.monitor || this.monitor.context !== ctx) {
+      this.monitor = ctx.createGain()
+      this.monitor.connect(ctx.destination)
+    }
+    this.monitor.gain.value = this.monitorLevel
+    return this.monitor
+  }
+
+  /**
+   * 0 to 1, linear in amplitude. Takes effect immediately on anything already
+   * playing, ramped over a few milliseconds so the change does not click.
+   */
+  setMonitor(level: number) {
+    this.monitorLevel = Math.max(0, Math.min(1, level))
+    if (this.monitor) {
+      const ctx = this.monitor.context
+      this.monitor.gain.setTargetAtTime(this.monitorLevel, ctx.currentTime, 0.01)
+    }
+  }
+
+  getMonitor(): number {
+    return this.monitorLevel
   }
 
   /** The rate everything decodes and renders at. */
@@ -77,7 +114,7 @@ export class Playback {
 
     const source = ctx.createBufferSource()
     source.buffer = pcmToBuffer(pcm, ctx)
-    source.connect(ctx.destination)
+    source.connect(this.monitorNode(ctx))
     source.onended = () => {
       if (this.source === source) {
         this.source = null

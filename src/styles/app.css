@@ -1486,3 +1486,51 @@
     margin-left: 0;
   }
 }
+
+/* --- output level -----------------------------------------------------
+ *
+ * Two dials that look alike and behave differently, so the note carries the
+ * distinction in words rather than leaving it to be discovered: level is in the
+ * file, monitor is only in the room.
+ */
+.levels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  border: var(--edge) solid var(--hairline);
+  background: var(--ground-raised);
+}
+
+.levels__title {
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+}
+
+.levels__unit {
+  font-size: var(--step--2);
+  color: var(--ink-dim);
+  letter-spacing: var(--tracking-mono);
+  /* Sits against the level knob, not floating between the two. */
+  margin-left: calc(var(--sp-5) * -1 + var(--sp-2));
+}
+
+.levels__note {
+  margin: 0;
+  margin-left: auto;
+  max-width: 34ch;
+  font-size: var(--step--2);
+  line-height: 1.4;
+  color: var(--ink-dim);
+  text-align: right;
+}
+
+@media (max-width: 720px) {
+  .levels__note {
+    margin-left: 0;
+    text-align: left;
+  }
+}

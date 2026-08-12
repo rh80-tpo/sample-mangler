@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useReducedMotion } from 'framer-motion'
 import { Waveform } from './components/Waveform'
 import { Playback } from './audio/playback'
-import { durationOf, peakOf, pcmFrom, type Pcm } from './audio/buffers'
+import {
+  applyLevel,
+  durationOf,
+  levelGain,
+  peakOf,
+  pcmFrom,
+  type Pcm,
+} from './audio/buffers'
 import { sniffSampleRate } from './audio/sniff'
 import {
   WARN_SECONDS,
@@ -15,6 +22,7 @@ import {
 import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
 import { Rack } from './components/Rack'
+import { Levels } from './components/Levels'
 import type { ChainSpec } from './audio/types'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample, type GeneratorId } from './audio/generate'
@@ -136,6 +144,8 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
   // Loop is on by default: this is a tool for auditioning loops and chops, and
   // hearing one pass of a candidate tells you almost nothing about it.
   const [loop, setLoop] = useState(true)
+  const [level, setLevel] = useState(0)
+  const [monitor, setMonitor] = useState(1)
   /**
    * One selection per panel. A selection on the source decides what actually
    * gets mangled, which is how you pull two bars of a vocal out of a five
@@ -192,9 +202,28 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
     return () => cancelAnimationFrame(raf)
   }, [playing, playback])
 
+  /**
+   * The roll with the level trim applied.
+   *
+   * Derived rather than stored, and the one value the player, the waveform, the
+   * WAV and a save all read — so the trim cannot land in the file without also
+   * being in what you just heard. A multiply over the finished buffer, so it is
+   * cheap enough to follow a drag without re-rendering the chain.
+   */
+  const mangled = useMemo(
+    () => (result ? applyLevel(result.pcm, level) : null),
+    [result, level],
+  )
+
+  // Monitor is a live node parameter, so it applies to whatever is already
+  // playing rather than waiting for the next press of play.
+  useEffect(() => {
+    playback.setMonitor(monitor)
+  }, [monitor, playback])
+
   // What the transport is actually pointed at right now.
   const current =
-    target === 'source' ? source : (result?.pcm ?? source)
+    target === 'source' ? source : (mangled ?? source)
 
   /** A selection only applies to the panel it was drawn on. */
   const regionOf = useCallback(
@@ -223,7 +252,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
   /** Click or keyboard on a panel: point the transport there and play from it. */
   const seekTo = useCallback(
     async (which: 'source' | 'mangled', position: number) => {
-      const pcm = which === 'source' ? source : result?.pcm
+      const pcm = which === 'source' ? source : mangled
       if (!pcm) return
       setTarget(which)
       setCursor(position)
@@ -231,7 +260,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       await playback.play(pcm, position, { loop, region: regionOf(which) })
       setPlaying(true)
     },
-    [source, result, playback, loop, regionOf],
+    [source, mangled, playback, loop, regionOf],
   )
 
   /** Selecting a region restarts playback inside it, so you hear the edit. */
@@ -239,7 +268,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
     (which: 'source' | 'mangled', next: Region | null) => {
       setTarget(which)
       setRegions((prev) => ({ ...prev, [which]: next }))
-      const pcm = which === 'source' ? source : result?.pcm
+      const pcm = which === 'source' ? source : mangled
       if (!pcm) return
 
       // The output length is snapped against whatever is actually going in.
@@ -265,7 +294,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
           .then(() => setPlaying(true))
       }
     },
-    [source, result, playback, loop],
+    [source, mangled, playback, loop],
   )
 
   // Toggling loop takes effect immediately rather than at the next press.
@@ -576,8 +605,8 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
     const at = resumeAt.current
     if (at == null || !result) return
     resumeAt.current = null
-    void playback.play(result.pcm, at)
-  }, [result, playback])
+    void playback.play(applyLevel(result.pcm, level), at)
+  }, [result, playback, level])
 
   // --- the roll ------------------------------------------------------
   const mangle = useCallback(async () => {
@@ -656,8 +685,9 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       return sourceRegion ? slicePcm(source, sourceRegion) : source
     }
     if (!result) return null
-    return mangledRegion ? slicePcm(result.pcm, mangledRegion) : result.pcm
-  }, [savingSource, source, sourceRegion, result, mangledRegion])
+    const out = applyLevel(result.pcm, level)
+    return mangledRegion ? slicePcm(out, mangledRegion) : out
+  }, [savingSource, source, sourceRegion, result, mangledRegion, level])
 
   const outputName = useCallback((): string => {
     if (savingSource) {
@@ -951,6 +981,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
               />
               <Waveform
                 pcm={result?.pcm ?? null}
+                scale={levelGain(level)}
                 tone="mangled"
                 label="mangled"
                 summary={
@@ -1057,6 +1088,13 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
               seconds={
                 inputRef.current ? durationOf(inputRef.current) : 2
               }
+            />
+            <Levels
+              level={level}
+              monitor={monitor}
+              disabled={busy}
+              onLevel={setLevel}
+              onMonitor={setMonitor}
             />
             <section className="len" aria-label="Output length">
               <div className="len__head">

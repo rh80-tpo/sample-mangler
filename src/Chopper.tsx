@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Waveform } from './components/Waveform'
 import { Playback } from './audio/playback'
-import { durationOf, peakOf, type Pcm } from './audio/buffers'
+import {
+  applyLevel,
+  durationOf,
+  levelGain,
+  peakOf,
+  type Pcm,
+} from './audio/buffers'
 import { sniffSampleRate } from './audio/sniff'
 import {
   checkDuration,
@@ -25,6 +31,7 @@ import { renderChain } from './audio/render'
 import { NO_FIT } from './audio/fit'
 import type { ChainSpec } from './audio/types'
 import { Rack } from './components/Rack'
+import { Levels } from './components/Levels'
 import { addItem, createFolder, listFolders } from './lib/library'
 
 const ACCEPT =
@@ -70,6 +77,8 @@ export function Chopper() {
   const [playing, setPlaying] = useState(false)
   const [playhead, setPlayhead] = useState<number | null>(null)
   const [loop, setLoop] = useState(true)
+  const [level, setLevel] = useState(0)
+  const [monitor, setMonitor] = useState(1)
   const [sourceInfo, setSourceInfo] = useState<string>('')
 
   useEffect(() => {
@@ -96,6 +105,12 @@ export function Chopper() {
     const id = setTimeout(() => setFlash(''), 2600)
     return () => clearTimeout(id)
   }, [flash])
+
+  // Monitor is a live node parameter, so it applies to whatever is already
+  // playing rather than waiting for the next press of play.
+  useEffect(() => {
+    playback.setMonitor(monitor)
+  }, [monitor, playback])
 
   // Key and tempo of the upload, so the suggested bpm is not a blind guess.
   useEffect(() => {
@@ -256,8 +271,18 @@ export function Chopper() {
     [runChain],
   )
 
-  /** What plays and exports: the chop through the rack, or the raw chop. */
-  const output = processed ?? result?.pcm ?? null
+  /**
+   * What plays and exports: the chop through the rack, then the level trim.
+   *
+   * One value for both, so the trim cannot drift between what you hear and what
+   * lands in the file. It is a multiply over the finished buffer, not a
+   * re-render, so the knob keeps up with a drag.
+   */
+  const rendered = processed ?? result?.pcm ?? null
+  const output = useMemo(
+    () => (rendered ? applyLevel(rendered, level) : null),
+    [rendered, level],
+  )
 
   // Rebuild when a control moves, but only once something exists.
   const first = useRef(true)
@@ -384,7 +409,8 @@ export function Chopper() {
               }
             />
             <Waveform
-              pcm={output}
+              pcm={rendered}
+              scale={levelGain(level)}
               tone="mangled"
               label={`chop · ${pattern}`}
               summary={
@@ -593,6 +619,16 @@ export function Chopper() {
           onChange={onChainChange}
           seconds={durationOf(result.pcm)}
           busy={busy}
+        />
+      ) : null}
+
+      {result ? (
+        <Levels
+          level={level}
+          monitor={monitor}
+          disabled={busy}
+          onLevel={setLevel}
+          onMonitor={setMonitor}
         />
       ) : null}
 

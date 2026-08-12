@@ -98,6 +98,47 @@ export function normalizeInPlace(pcm: Pcm, ceiling = CEILING): Pcm {
   return pcm
 }
 
+/**
+ * The quietest level that still counts as signal rather than mute.
+ *
+ * -48 dB is about the point where a sample is inaudible under a full mix, so
+ * the bottom of the dial is treated as off rather than as very quiet.
+ */
+export const MIN_LEVEL_DB = -48
+
+/**
+ * Trim the output level, in dB.
+ *
+ * Attenuation only, and deliberately so. `normalize` has already put the peak
+ * at -1 dBFS, so there is no headroom above it: a boost could only clip, which
+ * is worse than not offering one. If you need it louder than this, the sample
+ * is as loud as it can be and the fader belongs in your DAW.
+ *
+ * `levelGain` is the same number without the buffer, for callers that only need
+ * to scale a drawing rather than the audio.
+ *
+ * Applied to the rendered result rather than inside the chain, so it costs one
+ * multiply instead of a re-render — and because it produces the Pcm that both
+ * the player and the WAV encoder read, what you hear stays what you export.
+ */
+export function levelGain(db: number): number {
+  if (db >= 0) return 1
+  return db <= MIN_LEVEL_DB ? 0 : Math.pow(10, db / 20)
+}
+
+export function applyLevel(pcm: Pcm, db: number): Pcm {
+  if (db >= 0) return pcm
+  const gain = levelGain(db)
+  return {
+    sampleRate: pcm.sampleRate,
+    channels: pcm.channels.map((ch) => {
+      const out = new Float32Array(ch.length)
+      for (let i = 0; i < ch.length; i++) out[i] = ch[i] * gain
+      return out
+    }),
+  }
+}
+
 /** Independent copy, so the caller can mutate without touching the original. */
 export function clonePcm(pcm: Pcm): Pcm {
   return {

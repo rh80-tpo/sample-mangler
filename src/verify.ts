@@ -10,7 +10,15 @@
  */
 import { describeChain, rollChain } from './audio/chain'
 import type { ChainSpec, EffectSpec } from './audio/types'
-import { durationOf, peakOf, pcmFrom, rmsOf, type Pcm } from './audio/buffers'
+import {
+  MIN_LEVEL_DB,
+  applyLevel,
+  durationOf,
+  peakOf,
+  pcmFrom,
+  rmsOf,
+  type Pcm,
+} from './audio/buffers'
 import { renderChain } from './audio/render'
 import { encodeWav, QUANTISATION_STEP } from './audio/wav'
 import { freshSeed } from './audio/rng'
@@ -18,6 +26,7 @@ import { GENERATORS, generateSample } from './audio/generate'
 import { DecodeError, decodeAudio } from './audio/decode'
 import { detectKey } from './audio/key'
 import { PATTERNS, buildChop } from './audio/chopper'
+import { Playback } from './audio/playback'
 import { describeLoopTempo, detectTempo, loopTempos } from './audio/tempo'
 
 const out = document.getElementById('out') as HTMLPreElement
@@ -184,6 +193,79 @@ async function run() {
       `${pairs} distinct pairs, worst-case corr ${maxPairCorr.toFixed(4)}` +
         (sameChainPairs ? `, ${sameChainPairs} repeat-chain pairs verified identical` : ''),
     )
+    log()
+  }
+
+  // --- output level -----------------------------------------------------
+  // There was no volume control at all for the first nine versions, and nothing
+  // here noticed. These checks exist so that cannot recur quietly: the level has
+  // to reach the exported bytes, and the monitor has to stay out of them.
+  {
+    log('=== output level ===')
+    log()
+    const src = generateSample('vocal', ctx.sampleRate, freshSeed())
+    const base = peakOf(src)
+
+    // Attenuation is exact, and it is the peak that has to move — a control
+    // that only changed rms could be a filter rather than a fader.
+    for (const db of [-6, -12, -24]) {
+      const cut = applyLevel(src, db)
+      const want = base * Math.pow(10, db / 20)
+      const got = peakOf(cut)
+      check(
+        `level ${db} dB attenuates exactly`,
+        Math.abs(got - want) < want * 0.001,
+        `peak ${got.toFixed(5)}, wanted ${want.toFixed(5)}`,
+      )
+    }
+
+    check('level 0 dB is a true no-op', applyLevel(src, 0) === src, 'same buffer back')
+    check(
+      `level ${MIN_LEVEL_DB} dB is silence`,
+      peakOf(applyLevel(src, MIN_LEVEL_DB)) === 0,
+      'peak 0',
+    )
+    check(
+      'level does not touch the buffer it was given',
+      peakOf(src) === base,
+      `source peak still ${base.toFixed(5)}`,
+    )
+
+    // The point of the whole render-once design: a trimmed output still has to
+    // survive the encode sample-for-sample, or preview and export have drifted.
+    {
+      const trimmed = applyLevel(src, -9)
+      const blob = encodeWav(trimmed)
+      const back = pcmFrom(await ctx.decodeAudioData(await blob.arrayBuffer()))
+      const { diff } = maxDiff(trimmed, back)
+      check(
+        'a trimmed output still exports exactly',
+        diff <= QUANTISATION_STEP * 1.5,
+        `max |delta| ${diff.toExponential(3)}`,
+      )
+    }
+
+    // Monitor must be a node, not a multiply. If it were ever implemented by
+    // scaling the buffer, the file would silently follow the listening level.
+    {
+      const probe = generateSample('vocal', ctx.sampleRate, 99)
+      const before = peakOf(probe)
+      const pb = new Playback()
+      pb.setMonitor(0.25)
+      check('monitor reports what it was set to', pb.getMonitor() === 0.25, '0.25')
+      pb.setMonitor(-3)
+      check('monitor clamps below zero', pb.getMonitor() === 0, 'clamped to 0')
+      pb.setMonitor(9)
+      check('monitor clamps above one', pb.getMonitor() === 1, 'clamped to 1')
+      pb.setMonitor(0.4)
+      await pb.play(probe)
+      pb.stop()
+      check(
+        'monitor leaves the audio untouched',
+        peakOf(probe) === before,
+        `peak still ${before.toFixed(5)} after playing at monitor 0.4`,
+      )
+    }
     log()
   }
 

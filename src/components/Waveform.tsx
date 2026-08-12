@@ -36,6 +36,16 @@ type Props = {
   sections?: { bar: number; letter: string }[]
   /** Seconds per bar, needed to place the section marks. */
   barSeconds?: number
+  /**
+   * Draw amplitude multiplier, 1 by default.
+   *
+   * The output level trim comes in here rather than as a scaled buffer. Peaks
+   * are cached against buffer identity, so handing this panel a freshly
+   * multiplied copy on every step of a level drag would recompute the envelope
+   * over every sample — 16 million of them on a three minute file. Scaling at
+   * paint time is the same picture for the cost of one multiply per column.
+   */
+  scale?: number
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
@@ -66,6 +76,7 @@ export function Waveform({
   tempo,
   sections,
   barSeconds,
+  scale = 1,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   // A press is a seek until it travels far enough to be a selection instead.
@@ -155,8 +166,8 @@ export function Waveform({
       ctx.beginPath()
       for (let i = from; i < to; i++) {
         const x = i * COL + dpr
-        const top = mid - peaks.max[i] * half
-        const bot = mid - peaks.min[i] * half
+        const top = mid - peaks.max[i] * half * scale
+        const bot = mid - peaks.min[i] * half * scale
         ctx.moveTo(x, top)
         ctx.lineTo(x, Math.max(bot, top + dpr))
       }
@@ -168,7 +179,7 @@ export function Waveform({
       ctx.beginPath()
       for (let i = from; i < to; i++) {
         const x = i * COL + dpr
-        const r = peaks.rms[i] * half
+        const r = peaks.rms[i] * half * scale
         if (r < dpr) continue
         ctx.moveTo(x, mid - r)
         ctx.lineTo(x, mid + r)
@@ -255,7 +266,7 @@ export function Waveform({
     }
 
     ctx.globalAlpha = 1
-  }, [size, pcm, tone, reveal, playhead, active, nonce, region, sections, barSeconds])
+  }, [size, pcm, tone, reveal, playhead, active, nonce, region, sections, barSeconds, scale])
 
   // --- scrubbing and selection ---------------------------------------
   const fractionAt = useCallback((clientX: number) => {

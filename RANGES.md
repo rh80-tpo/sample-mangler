@@ -58,6 +58,34 @@ Near-silent output is left alone rather than normalised, because amplifying
 silence just turns the noise floor into the result. That case is detected and
 reported instead.
 
+## Output level
+
+There was no volume control at all until this was added, which is worth writing
+down because the reason it went unnoticed is instructive: every render is peak
+normalised to -1 dBFS, so nothing ever sounded broken. It sounded *consistent*,
+which is a different thing from being adjustable.
+
+| Control | Range | Why |
+| --- | --- | --- |
+| level | -48 to 0 dB, default 0 | Attenuation only. Normalising already put the peak at -1 dBFS, so there is no headroom above it and a boost could only clip — which is worse than not offering one. -48 dB is where a sample is inaudible under a full mix, so the bottom of the travel is treated as off rather than as very quiet. |
+| monitor | 0 to 100, default 100 | Linear in amplitude, on a gain node between the buffer and the speakers. |
+
+The two are deliberately separate controls rather than one fader.
+
+`level` is signal. It is applied to the finished buffer, and that one buffer is
+what the player reads *and* what the WAV encoder reads, so a trim cannot end up
+in the file without also being in what you just heard. It is a multiply over the
+rendered output rather than a stage in the chain, so it costs one pass instead of
+a re-render and can follow a drag.
+
+`monitor` is not signal. It never reaches the buffer, so it never reaches the
+file. That is its whole purpose: auditioning a loud loop quietly under a beat
+should not change what you are about to export.
+
+Collapsing them into a single fader would have forced a choice between breaking
+this tool's one hard promise — that the export matches the preview — and taking
+away the ability to listen quietly. Two controls, labelled for what they do.
+
 ## The vocal chopper
 
 Different job, so different reasoning. The mangler picks values for you; here
