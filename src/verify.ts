@@ -27,6 +27,12 @@ import { DecodeError, decodeAudio } from './audio/decode'
 import { detectKey } from './audio/key'
 import { PATTERNS, buildChop } from './audio/chopper'
 import { Playback } from './audio/playback'
+import {
+  DEFAULT_SIDECHAIN,
+  applySidechain,
+  duckGainAt,
+  renderKick,
+} from './audio/sidechain'
 import { describeLoopTempo, detectTempo, loopTempos } from './audio/tempo'
 
 const out = document.getElementById('out') as HTMLPreElement
@@ -196,6 +202,111 @@ async function run() {
     log()
   }
 
+  // --- sidechain --------------------------------------------------------
+  {
+    log('=== sidechain ===')
+    log()
+    const bpm = 120
+    const spec = { ...DEFAULT_SIDECHAIN, amount: 0.8, rate: 4 as const, release: 0.5 }
+    const interval = 60 / bpm
+
+    // At the kick itself the gain is still open; it closes over the attack.
+    // That ordering is what lets a transient through instead of swallowing it.
+    check('gain is open at the kick', duckGainAt(0, spec, bpm) === 1, 'gain 1.0')
+    const atFloor = duckGainAt(0.004, spec, bpm)
+    check(
+      'gain reaches the floor after the attack',
+      Math.abs(atFloor - (1 - spec.amount)) < 0.001,
+      `gain ${atFloor.toFixed(4)}, floor ${(1 - spec.amount).toFixed(4)}`,
+    )
+
+    // Recovery has to be monotonic, or it is not a release, it is a wobble.
+    let rising = true
+    let prev = atFloor
+    for (let t = 0.005; t < interval - 0.001; t += 0.002) {
+      const g = duckGainAt(t, spec, bpm)
+      if (g < prev - 1e-6) rising = false
+      prev = g
+    }
+    check('the duck recovers monotonically', rising, `ends at ${prev.toFixed(4)}`)
+
+    // It is tempo locked, so the same point in the next kick must match.
+    let periodic = true
+    for (let t = 0.01; t < interval; t += 0.01) {
+      if (Math.abs(duckGainAt(t, spec, bpm) - duckGainAt(t + interval, spec, bpm)) > 1e-6) {
+        periodic = false
+      }
+    }
+    check('the duck is locked to the grid', periodic, `period ${interval.toFixed(3)}s`)
+
+    check('amount 0 is a true no-op', duckGainAt(0.1, { ...spec, amount: 0 }, bpm) === 1, 'gain 1.0')
+
+    // Rate has to change where the holes land, not just the label.
+    const quarter = duckGainAt(interval / 2, { ...spec, rate: 4 }, bpm)
+    const eighth = duckGainAt(interval / 2, { ...spec, rate: 8 }, bpm)
+    check('rate moves the kick positions', Math.abs(quarter - eighth) > 0.01, `1/4 ${quarter.toFixed(3)} vs 1/8 ${eighth.toFixed(3)}`)
+
+    // And it has to reach the audio, not only the envelope function.
+    {
+      const steady = generateSample('vocal', ctx.sampleRate, freshSeed())
+      const ducked = applySidechain(steady, spec, bpm)
+      check('sidechain leaves the source alone', ducked !== steady, 'new buffer')
+      check(
+        'ducking lowers the level',
+        rmsOf(ducked) < rmsOf(steady) * 0.95,
+        `rms ${rmsOf(steady).toFixed(4)} dry vs ${rmsOf(ducked).toFixed(4)} ducked`,
+      )
+      check(
+        'amount 0 returns the same buffer',
+        applySidechain(steady, { ...spec, amount: 0 }, bpm) === steady,
+        'same buffer back',
+      )
+
+      // A ducked output still has to survive the encode, same as a trimmed one.
+      const blob = encodeWav(ducked)
+      const back = pcmFrom(await ctx.decodeAudioData(await blob.arrayBuffer()))
+      const { diff } = maxDiff(ducked, back)
+      check(
+        'a ducked output still exports exactly',
+        diff <= QUANTISATION_STEP * 1.5,
+        `max |delta| ${diff.toExponential(3)}`,
+      )
+    }
+
+    // The reference kick is audition-only, so all that matters is that it is a
+    // real kick at the right spacing.
+    {
+      const k = renderKick(ctx.sampleRate, 2, bpm, 4)
+      check('reference kick is audible', rmsOf(k) > 0.01, `rms ${rmsOf(k).toFixed(4)}`)
+      // Four quarter notes in two seconds at 120.
+      //
+      // Counted with a time-based refractory gap, not by waiting for silence
+      // between hits: a kick is a sine, so it crosses zero every half cycle and
+      // a re-arm-on-quiet counter scores each kick twice.
+      const countHits = (pcm: Pcm) => {
+        const ch = pcm.channels[0]
+        const gap = Math.floor(0.15 * pcm.sampleRate)
+        let hits = 0
+        let last = -gap
+        for (let i = 0; i < ch.length; i++) {
+          if (Math.abs(ch[i]) > 0.2 && i - last >= gap) {
+            hits++
+            last = i
+          }
+        }
+        return hits
+      }
+      check('reference kick lands on the beat', countHits(k) === 4, `${countHits(k)} hits in 2s at 120 (1/4)`)
+      const eighths = renderKick(ctx.sampleRate, 2, bpm, 8)
+      check(
+        'reference kick follows the rate',
+        countHits(eighths) === 8,
+        `${countHits(eighths)} hits in 2s at 120 (1/8)`,
+      )
+    }
+    log()
+  }
+
   // --- output level -----------------------------------------------------
   // There was no volume control at all for the first nine versions, and nothing
   // here noticed. These checks exist so that cannot recur quietly: the level has
@@ -334,6 +445,53 @@ async function run() {
         `${wanted} bar loop is exact`,
         r.bars === wanted && Math.abs(seconds - expected) < 0.01,
         `${r.bars} bars, ${seconds.toFixed(3)}s vs ${expected.toFixed(3)}s`,
+      )
+    }
+
+    // One voice at a time. Overlapping chops are the thing that turns a rhythm
+    // into a smear, so this is checked on the reported voices rather than by ear.
+    {
+      for (const hold of [0, 0.5, 1]) {
+        const r = buildChop(vocal, { ...base, pattern: 'AAAB', hold })
+        const sorted = [...r.voices].sort((a, b) => a.start - b.start)
+        let overlaps = 0
+        let worst = 0
+        for (let i = 1; i < sorted.length; i++) {
+          const over = sorted[i - 1].end - sorted[i].start
+          if (over > 1e-9) {
+            overlaps++
+            worst = Math.max(worst, over)
+          }
+        }
+        check(
+          `hold ${hold} never plays two voices at once`,
+          overlaps === 0,
+          `${sorted.length} voices, ${overlaps} overlapping${overlaps ? `, worst ${(worst * 100).toFixed(3)}% of the loop` : ''}`,
+        )
+      }
+
+      // Colouring is only meaningful if the voices actually name their source
+      // slice, and if a repeated phrase repeats its colours.
+      const r = buildChop(vocal, { ...base, pattern: 'AAAB' })
+      check(
+        'every voice names a real slice',
+        r.voices.length > 0 && r.voices.every((v) => v.slice >= 0 && v.slice < r.slices),
+        `${r.voices.length} voices across ${r.slices} slices`,
+      )
+      const inPhrase = (i: number) =>
+        r.voices
+          .filter((v) => v.start >= i / 4 - 1e-9 && v.start < (i + 1) / 4)
+          .map((v) => v.slice)
+          .join(',')
+      check(
+        'a repeated phrase repeats its colours',
+        inPhrase(0) === inPhrase(1) && inPhrase(0) === inPhrase(2),
+        `A "${inPhrase(0).slice(0, 28)}" vs B "${inPhrase(3).slice(0, 28)}"`,
+      )
+      check(
+        'the variation phrase is coloured differently',
+        inPhrase(3) !== inPhrase(0),
+        'B differs from A',
       )
     }
 

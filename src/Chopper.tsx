@@ -32,6 +32,14 @@ import { NO_FIT } from './audio/fit'
 import type { ChainSpec } from './audio/types'
 import { Rack } from './components/Rack'
 import { Levels } from './components/Levels'
+import { Sidechain } from './components/Sidechain'
+import {
+  DEFAULT_SIDECHAIN,
+  applySidechain,
+  duckGainAt,
+  renderKick,
+  type SidechainSpec,
+} from './audio/sidechain'
 import { addItem, createFolder, listFolders } from './lib/library'
 
 const ACCEPT =
@@ -79,6 +87,8 @@ export function Chopper() {
   const [loop, setLoop] = useState(true)
   const [level, setLevel] = useState(0)
   const [monitor, setMonitor] = useState(1)
+  const [sidechain, setSidechain] = useState<SidechainSpec>(DEFAULT_SIDECHAIN)
+  const [kickAudible, setKickAudible] = useState(false)
   const [sourceInfo, setSourceInfo] = useState<string>('')
 
   useEffect(() => {
@@ -271,6 +281,14 @@ export function Chopper() {
     [runChain],
   )
 
+  // When a control settles, pick playback back up where it was rather than
+  // leaving the transport stopped mid-tweak.
+  const resumeAfterEdit = useCallback(() => {
+    if (!playback.playing) return
+    resumeAt.current = playback.progress() ?? 0
+  }, [playback])
+  const resumeAt = useRef<number | null>(null)
+
   /**
    * What plays and exports: the chop through the rack, then the level trim.
    *
@@ -280,9 +298,29 @@ export function Chopper() {
    */
   const rendered = processed ?? result?.pcm ?? null
   const output = useMemo(
-    () => (rendered ? applyLevel(rendered, level) : null),
-    [rendered, level],
+    () =>
+      rendered ? applyLevel(applySidechain(rendered, sidechain, bpm), level) : null,
+    [rendered, sidechain, bpm, level],
   )
+
+  /** Draw gain, so a duck or a trim redraws without re-reading the samples. */
+  const gainAt = useCallback(
+    (position: number) => {
+      if (!rendered) return 1
+      const seconds = position * durationOf(rendered)
+      return levelGain(level) * duckGainAt(seconds, sidechain, bpm)
+    },
+    [rendered, level, sidechain, bpm],
+  )
+
+  /**
+   * The reference kick. Built at the chop's own tempo, which is the tempo the
+   * loop was cut to, so the duck lands where the grid says it should.
+   */
+  const kick = useMemo(() => {
+    if (!kickAudible || !rendered) return null
+    return renderKick(rendered.sampleRate, durationOf(rendered), bpm, sidechain.rate)
+  }, [kickAudible, rendered, bpm, sidechain.rate])
 
   // Rebuild when a control moves, but only once something exists.
   const first = useRef(true)
@@ -311,7 +349,7 @@ export function Chopper() {
       setPlayhead(null)
       return
     }
-    await playback.play(current, cursor, { loop })
+    await playback.play(current, cursor, { loop, kick })
     setPlaying(true)
   }, [current, playback, loop, cursor])
 
@@ -323,10 +361,10 @@ export function Chopper() {
       setTarget(which)
       setCursor(position)
       setPlayhead(position)
-      await playback.play(pcm, position, { loop })
+      await playback.play(pcm, position, { loop, kick })
       setPlaying(true)
     },
-    [source, output, playback, loop],
+    [source, output, playback, loop, kick],
   )
 
   const exportWav = useCallback(() => {
@@ -410,7 +448,8 @@ export function Chopper() {
             />
             <Waveform
               pcm={rendered}
-              scale={levelGain(level)}
+              gainAt={gainAt}
+              voices={result?.voices}
               tone="mangled"
               label={`chop · ${pattern}`}
               summary={
@@ -619,6 +658,18 @@ export function Chopper() {
           onChange={onChainChange}
           seconds={durationOf(result.pcm)}
           busy={busy}
+        />
+      ) : null}
+
+      {result ? (
+        <Sidechain
+          spec={sidechain}
+          kickAudible={kickAudible}
+          bpm={bpm}
+          disabled={busy}
+          onChange={setSidechain}
+          onKickAudible={setKickAudible}
+          onCommit={resumeAfterEdit}
         />
       ) : null}
 

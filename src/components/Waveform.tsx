@@ -37,18 +37,38 @@ type Props = {
   /** Seconds per bar, needed to place the section marks. */
   barSeconds?: number
   /**
-   * Draw amplitude multiplier, 1 by default.
+   * Draw gain at a position through the buffer, 0 to 1 in, amplitude out.
    *
-   * The output level trim comes in here rather than as a scaled buffer. Peaks
-   * are cached against buffer identity, so handing this panel a freshly
-   * multiplied copy on every step of a level drag would recompute the envelope
-   * over every sample — 16 million of them on a three minute file. Scaling at
-   * paint time is the same picture for the cost of one multiply per column.
+   * Everything applied after the render — the level trim and the sidechain duck
+   * — comes in here rather than as a modified buffer. Peaks are cached against
+   * buffer identity, so handing this panel a freshly multiplied copy on every
+   * step of a drag would recompute the envelope over every sample, 16 million of
+   * them on a three minute file. Evaluating a function per column is the same
+   * picture for a few hundred calls.
    */
-  scale?: number
+  gainAt?: (position: number) => number
+  /**
+   * Voices to colour individually, as fractions of the whole.
+   *
+   * Same `slice` gets the same tint wherever it lands, so a repeated phrase
+   * repeats its colours and you can see the arrangement instead of squinting at
+   * an envelope. The palette stays inside a warm band around the signal colour
+   * rather than going full rainbow, because the point is to tell chops apart,
+   * not to redecorate.
+   */
+  voices?: { start: number; end: number; slice: number }[]
 }
 
 /** Column pitch in device pixels: a 2px stroke with a 1px gap. */
+const CHOP_TINTS = [
+  'hsl(10 92% 56%)',
+  'hsl(30 90% 58%)',
+  'hsl(45 84% 60%)',
+  'hsl(2 76% 63%)',
+  'hsl(19 72% 47%)',
+  'hsl(37 66% 45%)',
+]
+
 const COL = 3
 
 /** Cheap deterministic hash, used for the unresolved-column noise. */
@@ -76,7 +96,8 @@ export function Waveform({
   tempo,
   sections,
   barSeconds,
-  scale = 1,
+  gainAt,
+  voices,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   // A press is a seek until it travels far enough to be a selection instead.
@@ -151,6 +172,18 @@ export function Waveform({
 
     const n = peaks.columns
     const headIndex = reveal >= 1 ? n : Math.floor(reveal * n)
+    // One tint per column, resolved once. -1 means no voice owns this column,
+    // which is silence between chops and stays the plain body colour.
+    let tint: Int16Array | null = null
+    if (voices && voices.length) {
+      tint = new Int16Array(n).fill(-1)
+      for (const v of voices) {
+        const a = Math.max(0, Math.floor(v.start * n))
+        const b = Math.min(n, Math.ceil(v.end * n))
+        for (let i = a; i < b; i++) tint[i] = v.slice % CHOP_TINTS.length
+      }
+    }
+
     // The played/unplayed split only means anything while audio is running.
     // Idle, the cursor is just a start marker and the whole waveform stays lit.
     const playIndex = !active || playhead == null ? n : Math.floor(playhead * n)
@@ -160,18 +193,29 @@ export function Waveform({
     // needing a separate overlay pass.
     const drawEnvelope = (from: number, to: number, alpha: number) => {
       if (to <= from) return
-      ctx.globalAlpha = alpha
-      ctx.strokeStyle = body
       ctx.lineWidth = 2 * dpr
-      ctx.beginPath()
-      for (let i = from; i < to; i++) {
-        const x = i * COL + dpr
-        const top = mid - peaks.max[i] * half * scale
-        const bot = mid - peaks.min[i] * half * scale
-        ctx.moveTo(x, top)
-        ctx.lineTo(x, Math.max(bot, top + dpr))
+
+      // One path per colour rather than one per column: a stroke call per
+      // column would be hundreds of them every frame.
+      const passes = tint ? CHOP_TINTS.length + 1 : 1
+      for (let pass = 0; pass < passes; pass++) {
+        const want = pass - 1
+        ctx.globalAlpha = alpha
+        ctx.strokeStyle = tint && want >= 0 ? CHOP_TINTS[want] : body
+        ctx.beginPath()
+        let drew = false
+        for (let i = from; i < to; i++) {
+          if (tint && tint[i] !== want) continue
+          const x = i * COL + dpr
+          const g = gainAt ? gainAt(i / n) : 1
+          const top = mid - peaks.max[i] * half * g
+          const bot = mid - peaks.min[i] * half * g
+          ctx.moveTo(x, top)
+          ctx.lineTo(x, Math.max(bot, top + dpr))
+          drew = true
+        }
+        if (drew) ctx.stroke()
       }
-      ctx.stroke()
 
       // Density core: the rms band inside the envelope.
       ctx.strokeStyle = core
@@ -179,7 +223,7 @@ export function Waveform({
       ctx.beginPath()
       for (let i = from; i < to; i++) {
         const x = i * COL + dpr
-        const r = peaks.rms[i] * half * scale
+        const r = peaks.rms[i] * half * (gainAt ? gainAt(i / n) : 1)
         if (r < dpr) continue
         ctx.moveTo(x, mid - r)
         ctx.lineTo(x, mid + r)
@@ -266,7 +310,7 @@ export function Waveform({
     }
 
     ctx.globalAlpha = 1
-  }, [size, pcm, tone, reveal, playhead, active, nonce, region, sections, barSeconds, scale])
+  }, [size, pcm, tone, reveal, playhead, active, nonce, region, sections, barSeconds, gainAt, voices])
 
   // --- scrubbing and selection ---------------------------------------
   const fractionAt = useCallback((clientX: number) => {

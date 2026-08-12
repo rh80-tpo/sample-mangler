@@ -8,6 +8,7 @@ import { pcmToBuffer, type Pcm } from './buffers'
 export class Playback {
   private ctx: AudioContext | null = null
   private source: AudioBufferSourceNode | null = null
+  private kick: AudioBufferSourceNode | null = null
   private monitor: GainNode | null = null
   private monitorLevel = 1
   private startedAt = 0
@@ -106,7 +107,16 @@ export class Playback {
   async play(
     pcm: Pcm,
     from = 0,
-    opts: { loop?: boolean; region?: { start: number; end: number } | null } = {},
+    opts: {
+      loop?: boolean
+      region?: { start: number; end: number } | null
+      /**
+       * A reference kick to hear underneath, for judging a sidechain duck.
+       * Monitored, never exported — it is mixed in after the buffer, so it
+       * cannot reach the Pcm the WAV encoder reads.
+       */
+      kick?: Pcm | null
+    } = {},
   ) {
     const ctx = this.context()
     if (ctx.state === 'suspended') await ctx.resume()
@@ -143,14 +153,41 @@ export class Playback {
     const wanted = Math.max(0, Math.min(0.999, from)) * full
     const offset = region ? Math.min(Math.max(wanted, lo), hi - 0.001) : wanted
     this.startedAt = ctx.currentTime - (offset - lo)
+    // The kick rides the same range on the same clock. Both are started with
+    // `start(0, ...)` in the same turn, so they land in the same render quantum
+    // rather than drifting the way two scheduled times would.
+    let kickSource: AudioBufferSourceNode | null = null
+    if (opts.kick) {
+      kickSource = ctx.createBufferSource()
+      kickSource.buffer = pcmToBuffer(opts.kick, ctx)
+      kickSource.connect(this.monitorNode(ctx))
+      if (opts.loop) {
+        kickSource.loop = true
+        kickSource.loopStart = lo
+        kickSource.loopEnd = Math.min(hi, kickSource.buffer.duration)
+      }
+      this.kick = kickSource
+    }
+
     if (region && !opts.loop) {
       source.start(0, offset, Math.max(0.01, hi - offset))
+      kickSource?.start(0, Math.min(offset, kickSource.buffer!.duration - 0.001), Math.max(0.01, hi - offset))
     } else {
       source.start(0, offset)
+      kickSource?.start(0, Math.min(offset, Math.max(0, kickSource.buffer!.duration - 0.001)))
     }
   }
 
   stop() {
+    if (this.kick) {
+      const k = this.kick
+      this.kick = null
+      try {
+        k.stop()
+      } catch {
+        // Already stopped.
+      }
+    }
     if (this.source) {
       const s = this.source
       this.source = null

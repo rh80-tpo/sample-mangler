@@ -23,11 +23,20 @@ import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
 import { Rack } from './components/Rack'
 import { Levels } from './components/Levels'
+import { Sidechain } from './components/Sidechain'
+import {
+  DEFAULT_SIDECHAIN,
+  applySidechain,
+  duckGainAt,
+  renderKick,
+  type SidechainSpec,
+} from './audio/sidechain'
 import type { ChainSpec } from './audio/types'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample, type GeneratorId } from './audio/generate'
 import {
   BAR_CHOICES,
+  BPM,
   NO_FIT,
   barLabel,
   describeLength,
@@ -146,6 +155,8 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
   const [loop, setLoop] = useState(true)
   const [level, setLevel] = useState(0)
   const [monitor, setMonitor] = useState(1)
+  const [sidechain, setSidechain] = useState<SidechainSpec>(DEFAULT_SIDECHAIN)
+  const [kickAudible, setKickAudible] = useState(false)
   /**
    * One selection per panel. A selection on the source decides what actually
    * gets mangled, which is how you pull two bars of a vocal out of a five
@@ -211,9 +222,34 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
    * cheap enough to follow a drag without re-rendering the chain.
    */
   const mangled = useMemo(
-    () => (result ? applyLevel(result.pcm, level) : null),
-    [result, level],
+    () =>
+      result ? applyLevel(applySidechain(result.pcm, sidechain, BPM), level) : null,
+    [result, sidechain, level],
   )
+
+  /**
+   * Draw gain, so a duck or a trim redraws without re-reading the samples.
+   * Same two stages in the same order as the audio above.
+   */
+  const gainAt = useCallback(
+    (position: number) => {
+      if (!result) return 1
+      const seconds = position * durationOf(result.pcm)
+      return levelGain(level) * duckGainAt(seconds, sidechain, BPM)
+    },
+    [result, level, sidechain],
+  )
+
+  /** The reference kick, rendered to match the output so looping stays locked. */
+  const kick = useMemo(() => {
+    if (!kickAudible || !result) return null
+    return renderKick(
+      result.pcm.sampleRate,
+      durationOf(result.pcm),
+      BPM,
+      sidechain.rate,
+    )
+  }, [kickAudible, result, sidechain.rate])
 
   // Monitor is a live node parameter, so it applies to whatever is already
   // playing rather than waiting for the next press of play.
@@ -245,9 +281,9 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       return
     }
     // Picks up from the cursor, so play after a seek starts where you put it.
-    await playback.play(current, cursor, { loop, region: activeRegion })
+    await playback.play(current, cursor, { loop, region: activeRegion, kick })
     setPlaying(true)
-  }, [current, playback, cursor, loop, activeRegion])
+  }, [current, playback, cursor, loop, activeRegion, kick])
 
   /** Click or keyboard on a panel: point the transport there and play from it. */
   const seekTo = useCallback(
@@ -257,10 +293,10 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       setTarget(which)
       setCursor(position)
       setPlayhead(position)
-      await playback.play(pcm, position, { loop, region: regionOf(which) })
+      await playback.play(pcm, position, { loop, region: regionOf(which), kick })
       setPlaying(true)
     },
-    [source, mangled, playback, loop, regionOf],
+    [source, mangled, playback, loop, regionOf, kick],
   )
 
   /** Selecting a region restarts playback inside it, so you hear the edit. */
@@ -305,9 +341,10 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
       void playback.play(current, playback.progress() ?? cursor, {
         loop: next,
         region: activeRegion,
+        kick,
       })
     }
-  }, [loop, playback, current, cursor, activeRegion])
+  }, [loop, playback, current, cursor, activeRegion, kick])
 
   /** Shared by file loads and generated samples. */
   const adopt = useCallback(
@@ -603,10 +640,10 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     const at = resumeAt.current
-    if (at == null || !result) return
+    if (at == null || !mangled) return
     resumeAt.current = null
-    void playback.play(applyLevel(result.pcm, level), at)
-  }, [result, playback, level])
+    void playback.play(mangled, at, { loop, region: mangledRegion, kick })
+  }, [mangled, playback, loop, mangledRegion, kick])
 
   // --- the roll ------------------------------------------------------
   const mangle = useCallback(async () => {
@@ -981,7 +1018,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
               />
               <Waveform
                 pcm={result?.pcm ?? null}
-                scale={levelGain(level)}
+                gainAt={gainAt}
                 tone="mangled"
                 label="mangled"
                 summary={
@@ -1088,6 +1125,15 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
               seconds={
                 inputRef.current ? durationOf(inputRef.current) : 2
               }
+            />
+            <Sidechain
+              spec={sidechain}
+              kickAudible={kickAudible}
+              bpm={BPM}
+              disabled={busy}
+              onChange={setSidechain}
+              onKickAudible={setKickAudible}
+              onCommit={resumeAfterEdit}
             />
             <Levels
               level={level}

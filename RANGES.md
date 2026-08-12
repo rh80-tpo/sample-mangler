@@ -45,6 +45,57 @@ chop guarantees real scatter and stutter.
 | drive | amount | 0.18 to 0.62, or 0.62 to 0.92 on a 25% "hard" branch | 0 to 1 | Past ~0.7 Tone.Distortion is mostly square wave; under ~0.15 it is inaudible. |
 | drive | alias | 2x or 4x 80% of the time, else none | none / 2x / 4x | Oversampling is on most of the time because the aliasing without it reads as a bug rather than a choice. It gets switched off deliberately, not by accident. |
 
+## Sidechain
+
+There is no kick track in this tool, so the kick is the grid — the same tempo
+the bar fitting already locks to on the mangler, and the chop's own tempo on the
+chopper. That is the case worth solving anyway: you are cutting a loop to sit
+under a beat you already have, and what you need is for the loop to leave a hole
+where your kick lands.
+
+| Control | Range | Why |
+| --- | --- | --- |
+| duck | 0 to 100, default 0 | How much level comes out under each kick. Off by default, because a sidechain you did not ask for is a bug. |
+| release | 5 to 100, default 45 | How long the recovery takes, as a percentage of the gap between kicks. Short is a tight tuck, long is a slow pump that never fully returns before the next hit. |
+| rate | 1/1, 1/2, 1/4, 1/8, default 1/4 | Where the kicks are. 1/4 is four-on-the-floor, which is the common case. |
+| hear kick | off by default | A reference kick under the preview. Monitored, never exported. |
+
+The attack is fixed at 4ms rather than exposed. A step change in gain is a click,
+and 4ms is short enough to read as instant while still letting a transient
+through — there is no useful musical reason to want it slower, and every reason
+not to want it faster.
+
+The recovery decays the gain *reduction* exponentially rather than ramping the
+gain up linearly, with a time constant of a third of the release. That is what a
+compressor actually does, and it is the difference between a sidechain that
+breathes and one that sounds like a gate.
+
+The reference kick exists because ducking against an imaginary kick is almost
+impossible to judge. It is mixed in on the playback path, after the buffer, so
+it cannot reach the Pcm the WAV encoder reads — the same signal/monitor split as
+the monitor fader. A body sine falling from 110Hz to 45Hz with 2ms of noise for
+the beater, which is the shape that reads as a kick rather than a low beep.
+
+## One voice at a time
+
+The chopper is monophonic: the next hit takes the voice, the way a sampler in
+mono mode does. Slices used to accumulate into the buffer and ring over each
+other, which turned a rhythm into a smear — and the rhythm is the whole point of
+that page.
+
+This changed what `hold` does, and for the better. Hold no longer widens the
+slot a slice may overflow; it lifts how much *material* the voice gets, letting
+the slice keep reading past its own transient into whatever came next in the
+take, right up to the moment the next hit steals it. A held vowel instead of a
+clipped syllable, without ever becoming two voices. There is a 6ms release on
+the steal so a cut mid-vowel is not a click.
+
+Each voice is reported with the source slice it came from, and the waveform tints
+it accordingly. Same syllable, same colour, wherever it lands — so a repeated
+phrase repeats its colours and the arrangement is visible rather than inferred.
+The palette stays in a warm band around the signal colour instead of going full
+rainbow, because the job is telling chops apart, not redecorating.
+
 ## Output level
 
 Every result is peak-normalised to **0.891 (-1.0 dBFS)**.

@@ -168,7 +168,7 @@ function gridWeight(step: number, resolution: number): number {
   return 0.28
 }
 
-type Placement = { step: number; slice: Slice; gain: number }
+type Placement = { step: number; slice: Slice; gain: number; sliceIndex: number }
 
 /** Place slices across `bars` bars on the grid. */
 function buildPhrase(
@@ -194,18 +194,18 @@ function buildPhrase(
     const chance = Math.min(1, opts.density * weight + late)
     if (!force && rng() > chance) continue
 
-    let slice: Slice
+    let sliceIndex: number
     if (opts.inOrder) {
-      slice = slices[cursor % slices.length]
+      sliceIndex = cursor % slices.length
       cursor++
     } else {
       // Mostly walk forward through the phrase, sometimes jump. Keeps some of
       // the original delivery instead of scrambling it completely.
       if (rng() < 0.7 + (1 - spice) * 0.2) cursor += 1
       else cursor = Math.floor(rng() * slices.length)
-      slice = slices[((cursor % slices.length) + slices.length) % slices.length]
+      sliceIndex = ((cursor % slices.length) + slices.length) % slices.length
     }
-    out.push({ step, slice, gain: 0.82 + rng() * 0.18 })
+    out.push({ step, slice: slices[sliceIndex], gain: 0.82 + rng() * 0.18, sliceIndex })
   }
   return out
 }
@@ -226,6 +226,14 @@ export type ChopResult = {
   /** Bar index where each phrase starts, and which letter it is. */
   sections: { bar: number; letter: string }[]
   bars: number
+  /**
+   * Every voice in the finished loop, as fractions of the whole.
+   *
+   * `slice` is which source slice it came from, so the same syllable can be
+   * given the same colour wherever it lands. This is what lets you see the
+   * pattern repeat rather than having to infer it from the waveform.
+   */
+  voices: { start: number; end: number; slice: number }[]
 }
 
 /**
@@ -252,6 +260,7 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
   const letters = LETTERS[options.pattern]
   const unique = [...new Set(letters)]
   const rendered: Record<string, Float32Array<ArrayBuffer>[]> = {}
+  const voicesByLetter: Record<string, { start: number; end: number; slice: number }[]> = {}
 
   for (const letter of unique) {
     // A is the main idea; later letters get progressively more variation.
@@ -260,45 +269,55 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
     const chans: Float32Array<ArrayBuffer>[] = pcm.channels.map(
       () => new Float32Array(phraseSamples),
     )
+    const voices: { start: number; end: number; slice: number }[] = []
 
     for (let p = 0; p < placements.length; p++) {
-      const { step, slice, gain } = placements[p]
+      const { step, slice, gain, sliceIndex } = placements[p]
       const at = step * stepSamples
       // A slice runs until the next placement, so by default nothing overlaps
       // into mush. `hold` extends that window and lets slices ring over each
       // other, which is the difference between a stutter and a held vowel.
       const nextStep =
         p + 1 < placements.length ? placements[p + 1].step : PHRASE_BARS * options.resolution
-      const slot = Math.max(stepSamples, (nextStep - step) * stepSamples)
-      const room = Math.round(slot * (1 + options.hold * 5))
-      // Two separate limits, and hold lifts both.
+      // One voice at a time.
       //
-      // `room` is how long the rhythm leaves free. `reach` is how much material
-      // there is to play: a slice normally stops at the next onset, which is
-      // what makes a chop a chop, but that also means it is usually shorter
-      // than its own slot — so widening `room` alone changes nothing at all.
-      // Hold has to also let the slice read past its onset boundary into
-      // whatever came next in the take. That is the difference between a
-      // clipped syllable and a held vowel.
+      // A chop is a mono instrument: the next hit takes the voice, the way a
+      // sampler in mono mode or a singer's throat does. Letting slices ring
+      // over each other turns a rhythm into a smear, and the rhythm is the
+      // whole point of this page. So a slice never outlives the next one.
+      const slot = Math.max(stepSamples, (nextStep - step) * stepSamples)
+
+      // What is left to lift is how much *material* the voice gets. A slice
+      // normally stops at the next transient, which is usually well short of
+      // its own slot, so it stops early and leaves a gap. Hold lets it keep
+      // reading past that boundary into whatever came next in the take, up to
+      // the moment the next hit steals the voice — a held vowel instead of a
+      // clipped syllable, without ever becoming two voices.
       const natural = slice.end - slice.start
       const toEnd = total - slice.start
       const reach = Math.round(natural + (toEnd - natural) * options.hold)
-      const len = Math.min(reach, room, phraseSamples - at)
+      const len = Math.min(reach, slot, phraseSamples - at)
       if (len <= 0) continue
 
+      // The tail fade is the voice being released rather than cut. Short enough
+      // to stay tight, long enough that a steal mid-vowel is not a click.
       const fade = Math.min(Math.floor(0.004 * sr), Math.floor(len / 2))
+      const release = Math.min(Math.floor(0.006 * sr), Math.floor(len / 2))
       for (let c = 0; c < chans.length; c++) {
         const src = pcm.channels[Math.min(c, pcm.channels.length - 1)]
         const dst = chans[c]
         for (let i = 0; i < len; i++) {
           let v = src[slice.start + i] * gain
           if (i < fade) v *= i / fade
-          else if (i > len - fade) v *= (len - i) / fade
-          dst[at + i] += v
+          else if (i > len - release) v *= (len - i) / release
+          // Assignment, not accumulation: nothing else owns these frames.
+          dst[at + i] = v
         }
       }
+      voices.push({ start: at, end: at + len, slice: sliceIndex })
     }
     rendered[letter] = chans
+    voicesByLetter[letter] = voices
   }
 
   // Stitch the arrangement.
@@ -308,12 +327,22 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
     channels: pcm.channels.map(() => new Float32Array(totalSamples)),
   }
   const sections: { bar: number; letter: string }[] = []
+  const voices: { start: number; end: number; slice: number }[] = []
   letters.forEach((letter, idx) => {
     sections.push({ bar: idx * PHRASE_BARS, letter })
     const src = rendered[letter]
     const at = idx * phraseSamples
     for (let c = 0; c < out.channels.length; c++) {
       out.channels[c].set(src[Math.min(c, src.length - 1)], at)
+    }
+    // The same phrase stamped twice gets the same colours twice, which is the
+    // repeat made visible.
+    for (const v of voicesByLetter[letter]) {
+      voices.push({
+        start: (at + v.start) / totalSamples,
+        end: (at + v.end) / totalSamples,
+        slice: v.slice,
+      })
     }
   })
 
@@ -326,5 +355,6 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
     onsets: onsets.length,
     sections,
     bars: PHRASE_BARS * letters.length,
+    voices,
   }
 }
