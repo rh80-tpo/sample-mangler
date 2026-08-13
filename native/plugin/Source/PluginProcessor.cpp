@@ -30,6 +30,17 @@ int phraseBarsFor(int index) {
   static constexpr int v[] = {1, 2, 4};
   return v[juce::jlimit(0, 2, index)];
 }
+/// Nearest-neighbour resample of a snapshot column array to the panel width.
+std::vector<float> resample(const std::vector<float>& from, int columns) {
+  std::vector<float> out;
+  if (from.empty() || columns <= 0) return out;
+  out.resize(static_cast<std::size_t>(columns));
+  for (int i = 0; i < columns; ++i) {
+    const auto at = static_cast<std::size_t>(double(i) / columns * double(from.size()));
+    out[static_cast<std::size_t>(i)] = from[std::min(from.size() - 1, at)];
+  }
+  return out;
+}
 }  // namespace
 
 juce::AudioProcessorValueTreeState::ParameterLayout HazenSamplerProcessor::layout() {
@@ -123,14 +134,14 @@ bool HazenSamplerProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
 bool HazenSamplerProcessor::loadSample(const juce::File& file) {
   std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
   if (reader == nullptr) {
-    const juce::ScopedLock sl(audioLock);
-    statusText = "could not read " + file.getFileName();
+    const juce::ScopedLock sl(uiLock);
+    ui.status = "could not read " + file.getFileName();
     return false;
   }
   const auto frames = static_cast<int>(reader->lengthInSamples);
   if (frames <= 0) {
-    const juce::ScopedLock sl(audioLock);
-    statusText = file.getFileName() + " is empty";
+    const juce::ScopedLock sl(uiLock);
+    ui.status = file.getFileName() + " is empty";
     return false;
   }
   // A whole track would make every render slow for no benefit, so take the
@@ -150,10 +161,14 @@ bool HazenSamplerProcessor::loadSample(const juce::File& file) {
   }
 
   {
-    const juce::ScopedLock sl(audioLock);
+    const juce::ScopedLock sl(sourceLock);
     source = std::move(loaded);
     loadedName = file.getFileName();
-    statusText = frames > maxFrames ? loadedName + " (first 30s)" : loadedName;
+  }
+  {
+    const juce::ScopedLock sl(uiLock);
+    ui.status = frames > maxFrames ? file.getFileName() + " (first 30s)" : file.getFileName();
+    ui.hasSample = true;
   }
   restartPending.store(true);
   invalidate();
@@ -161,8 +176,10 @@ bool HazenSamplerProcessor::loadSample(const juce::File& file) {
 }
 
 void HazenSamplerProcessor::startPlayback() {
-  const juce::ScopedLock sl(audioLock);
-  playHead = 0.0;
+  // Atomics only. Touching playHead from here would need the audio lock, which
+  // is the thing that caused the dropouts in the first place — the audio thread
+  // rewinds itself when it sees the flag.
+  rewind.store(true);
   manualPlay.store(true);
   playing.store(true);
 }
@@ -170,8 +187,6 @@ void HazenSamplerProcessor::startPlayback() {
 void HazenSamplerProcessor::stopPlayback() {
   manualPlay.store(false);
   playing.store(false);
-  const juce::ScopedLock sl(audioLock);
-  playHead = 0.0;
 }
 
 void HazenSamplerProcessor::invalidate() {
@@ -187,7 +202,7 @@ void HazenSamplerProcessor::readParameters() {
   syncToHost = flag("sync");
   // With sync off the knob is the grid. With it on, processBlock has already
   // pushed the host's tempo into hostBpm.
-  if (!syncToHost) hostBpm = static_cast<double>(raw("tempo"));
+  if (!syncToHost) hostBpm.store(static_cast<double>(raw("tempo")));
 
   mangle.reverse_on = flag("revon");
   mangle.chop_on = flag("chopon");
@@ -210,7 +225,7 @@ void HazenSamplerProcessor::readParameters() {
   mangle.seed = rollSeed;
   barsWanted = barsFor(static_cast<int>(raw("bars")));
 
-  chopping.bpm = hostBpm;
+  chopping.bpm = hostBpm.load();
   chopping.pattern = static_cast<hazen::Pattern>(juce::jlimit(0, 5, static_cast<int>(raw("pattern"))));
   chopping.phrase_bars = phraseBarsFor(static_cast<int>(raw("length")));
   chopping.cut_per_bar = cutPerBar(static_cast<int>(raw("cut")));
@@ -238,10 +253,12 @@ void HazenSamplerProcessor::run() {
 
 void HazenSamplerProcessor::renderNow() {
   hazen::Audio input;
+  juce::String name;
   {
-    const juce::ScopedLock sl(audioLock);
+    const juce::ScopedLock sl(sourceLock);
     if (source.frames() == 0) return;
-    input = source;  // copy, so the audio thread never sees a half-written buffer
+    input = source;
+    name = loadedName;
   }
 
   rendering.store(true);
@@ -276,23 +293,26 @@ void HazenSamplerProcessor::renderNow() {
   } else {
     out = input;
     hazen::run_mangle(out, mangle);
-    hazen::fit_to_bars(out, barsWanted, hostBpm);
+    hazen::fit_to_bars(out, barsWanted, hostBpm.load());
     note = juce::String(barsWanted, 0) + juce::String(" bars") + kDot + "mangled";
   }
 
-  hazen::apply_sidechain(out, duckAmount, duckRate, duckRelease, hostBpm);
+  hazen::apply_sidechain(out, duckAmount, duckRate, duckRelease, hostBpm.load());
   hazen::apply_level(out, levelDb);
 
-  {
-    const juce::ScopedLock sl(audioLock);
-    rendered = std::move(out);
-    voices = std::move(builtVoices);
-    // A rechop or a roll is a new idea, so it should be heard from the top
-    // rather than from wherever the last one happened to be.
-    if (restartPending.exchange(false)) playHead = 0.0;
-    else if (playHead >= static_cast<double>(rendered.frames())) playHead = 0.0;
-    statusText = loadedName.isEmpty() ? note : loadedName + " · " + note;
-  }
+  publishForEditor(out, builtVoices, name.isEmpty() ? note : name + kDot + note);
+
+  // Publish into the slot the audio thread is not reading, then point at it.
+  // The release/acquire pair is what makes the buffer visible before the index.
+  const int slot = writeTake;
+  takes[static_cast<std::size_t>(slot)].audio = std::move(out);
+  takes[static_cast<std::size_t>(slot)].voices = std::move(builtVoices);
+  writeTake = (writeTake + 1) % static_cast<int>(takes.size());
+  liveTake.store(slot, std::memory_order_release);
+
+  // A rechop or a roll is a new idea, so it is heard from the top rather than
+  // from wherever the last one happened to be.
+  if (restartPending.exchange(false)) rewind.store(true);
   rendering.store(false);
 }
 
@@ -306,25 +326,21 @@ void HazenSamplerProcessor::processBlock(juce::AudioBuffer<float>& buffer,
   if (auto* head = getPlayHead()) {
     if (const auto pos = head->getPosition()) {
       if (const auto bpm = pos->getBpm()) {
-        if (std::abs(*bpm - hostBpm) > 0.01) {
-          hostBpm = *bpm;
-          invalidate();
+        if (std::abs(*bpm - hostBpm.load()) > 0.01) {
+          hostBpm.store(*bpm);
+          dirty.store(true);  // notify() is not real-time safe; the thread polls
         }
       }
       if (syncToHost) {
         if (const auto ppq = pos->getPpqPosition()) {
-          // Restart on the bar so the loop stays locked to the arrangement
-          // rather than to whenever the plugin happened to be told to play.
           const double bars = *ppq / 4.0;
           const double wrapped = bars - std::floor(bars);
-          const bool rolling = pos->getIsPlaying();
-          if (rolling) {
-            if (lastHostPpq < 0.0 || wrapped < lastHostPpq) playHead = 0.0;
+          if (pos->getIsPlaying()) {
+            // Restart on the bar so the loop stays locked to the arrangement.
+            if (lastHostPpq < 0.0 || wrapped < lastHostPpq) rewind.store(true);
             lastHostPpq = wrapped;
             playing.store(true);
           } else {
-            // Host stopped. Fall back to whatever the play button asked for
-            // instead of forcing silence.
             playing.store(manualPlay.load());
             lastHostPpq = -1.0;
           }
@@ -336,122 +352,195 @@ void HazenSamplerProcessor::processBlock(juce::AudioBuffer<float>& buffer,
   for (const auto meta : midi) {
     const auto m = meta.getMessage();
     if (m.isNoteOn()) {
-      playHead = 0.0;
+      rewind.store(true);
       playing.store(true);
-    } else if (m.isNoteOff() || m.isAllNotesOff()) {
-      // Notes retrigger rather than gate: a chop loop should finish its bar.
-      if (m.isAllNotesOff()) playing.store(false);
+    } else if (m.isAllNotesOff()) {
+      playing.store(false);
     }
   }
 
-  const juce::ScopedTryLock sl(audioLock);
-  if (!sl.isLocked() || rendered.frames() == 0 || !playing.load()) return;
+  // No lock. The index is the only shared thing read here, and the buffer it
+  // points at is never written while it is live.
+  const int want = liveTake.load(std::memory_order_acquire);
+  if (want < 0) {
+    position.store(-1.0f, std::memory_order_relaxed);
+    return;
+  }
 
-  const auto frames = rendered.frames();
+  const double sr = getSampleRate() > 0.0 ? getSampleRate() : 44100.0;
+  const int rampFrames = std::max(1, int(0.006 * sr));
+  const bool wantPlaying = playing.load();
+
+  if (want != readingTake) {
+    // Swapping the buffer under a playing loop is a step unless it is blended.
+    if (readingTake >= 0 && gain > 0.0f) {
+      fadeFrom = readingTake;
+      fadeFromHead = playHead;
+      fadePos = 0;
+      fadeLength = std::max(1, int(0.008 * sr));
+    }
+    readingTake = want;
+    const auto frames = takes[static_cast<std::size_t>(want)].audio.frames();
+    if (frames == 0 || playHead >= double(frames)) playHead = 0.0;
+  }
+
+  if (rewind.exchange(false)) {
+    playHead = 0.0;
+    // Cancel any crossfade: a rewind is meant to be heard from the top, not
+    // blended with where it used to be.
+    fadeFrom = -1;
+  }
+
+  const auto& take = takes[static_cast<std::size_t>(readingTake)];
+  const auto frames = take.audio.frames();
+  if (frames == 0) {
+    position.store(-1.0f, std::memory_order_relaxed);
+    return;
+  }
+
+  // Ramp toward the transport state rather than jumping to it.
+  const float target = wantPlaying ? 1.0f : 0.0f;
+  gainStep = (target - gain) / float(rampFrames);
+
   const int outChans = buffer.getNumChannels();
   const int n = buffer.getNumSamples();
-  // The rendered buffer is at the file's rate; step through it at the ratio to
-  // the host rate so a 48k sample in a 44.1k session plays at the right pitch.
-  const double ratio = rendered.sample_rate / getSampleRate();
+  const double ratio = take.audio.sample_rate / sr;
+
+  auto sampleAt = [](const hazen::Audio& a, double head, int channel) {
+    const auto len = a.frames();
+    const auto i0 = static_cast<std::size_t>(head);
+    const auto i1 = (i0 + 1) % len;  // wraps, so the loop point interpolates too
+    const float frac = static_cast<float>(head - double(i0));
+    const auto& src = a.channels[static_cast<std::size_t>(
+        std::min(channel, a.channel_count() - 1))];
+    return src[i0] * (1.0f - frac) + src[i1] * frac;
+  };
 
   for (int i = 0; i < n; ++i) {
-    if (playHead >= static_cast<double>(frames)) {
-      playHead = 0.0;  // loop
+    if (gain < target) gain = std::min(target, gain + std::abs(gainStep));
+    else if (gain > target) gain = std::max(target, gain - std::abs(gainStep));
+
+    if (playHead >= double(frames)) playHead -= double(frames);  // seamless wrap
+
+    float blend = 1.0f;
+    if (fadeFrom >= 0) {
+      blend = float(fadePos) / float(fadeLength);
+      if (++fadePos >= fadeLength) fadeFrom = -1;
     }
-    const auto i0 = static_cast<std::size_t>(playHead);
-    const auto i1 = std::min(frames - 1, i0 + 1);
-    const float frac = static_cast<float>(playHead - static_cast<double>(i0));
+
     for (int c = 0; c < outChans; ++c) {
-      const auto& src = rendered.channels[static_cast<std::size_t>(
-          std::min(c, rendered.channel_count() - 1))];
-      buffer.getWritePointer(c)[i] = src[i0] * (1.0f - frac) + src[i1] * frac;
+      float v = sampleAt(take.audio, playHead, c) * blend;
+      if (fadeFrom >= 0) {
+        const auto& old = takes[static_cast<std::size_t>(fadeFrom)].audio;
+        if (old.frames() > 0) {
+          const double h = std::fmod(fadeFromHead, double(old.frames()));
+          v += sampleAt(old, h, c) * (1.0f - blend);
+        }
+      }
+      buffer.getWritePointer(c)[i] = v * gain;
     }
+
     playHead += ratio;
+    if (fadeFrom >= 0) fadeFromHead += ratio;
+  }
+
+  // Once the ramp has closed, stop consuming: a silent loop still burns cycles.
+  if (!wantPlaying && gain <= 0.0f) {
+    playHead = 0.0;
+    position.store(-1.0f, std::memory_order_relaxed);
+  } else {
+    position.store(float(playHead / double(frames)), std::memory_order_relaxed);
   }
 }
 
 juce::String HazenSamplerProcessor::sampleName() const {
-  const juce::ScopedLock sl(audioLock);
+  const juce::ScopedLock sl(sourceLock);
   return loadedName;
 }
 
 bool HazenSamplerProcessor::hasSample() const {
-  const juce::ScopedLock sl(audioLock);
+  const juce::ScopedLock sl(sourceLock);
   return source.frames() > 0;
 }
 
 double HazenSamplerProcessor::renderedSeconds() const {
-  const juce::ScopedLock sl(audioLock);
-  return rendered.seconds();
+  const juce::ScopedLock sl(uiLock);
+  return ui.seconds;
 }
 
 juce::String HazenSamplerProcessor::status() const {
-  const juce::ScopedLock sl(audioLock);
-  return statusText;
+  const juce::ScopedLock sl(uiLock);
+  return ui.status;
 }
 
 float HazenSamplerProcessor::playPosition() const {
-  if (!playing.load()) return -1.0f;
-  const juce::ScopedLock sl(audioLock);
-  if (rendered.frames() == 0) return -1.0f;
-  return static_cast<float>(playHead / static_cast<double>(rendered.frames()));
+  // Published by the audio thread. Reading it takes no lock at all.
+  return position.load(std::memory_order_relaxed);
 }
 
 std::vector<float> HazenSamplerProcessor::peaks(int columns) const {
-  std::vector<float> out;
-  const juce::ScopedLock sl(audioLock);
-  if (rendered.frames() == 0 || columns <= 0) return out;
-  out.resize(static_cast<std::size_t>(columns), 0.0f);
-  const auto per = std::max<std::size_t>(1, rendered.frames() / static_cast<std::size_t>(columns));
-  for (int i = 0; i < columns; ++i) {
-    const std::size_t at = static_cast<std::size_t>(i) * per;
-    float peak = 0.0f;
-    for (const auto& ch : rendered.channels) {
-      for (std::size_t j = at; j < std::min(rendered.frames(), at + per); ++j) {
-        peak = std::max(peak, std::fabs(ch[j]));
+  const juce::ScopedLock sl(uiLock);
+  return resample(ui.peaks, columns);
+}
+
+void HazenSamplerProcessor::publishForEditor(const hazen::Audio& audio,
+                                             const std::vector<hazen::Voice>& v,
+                                             const juce::String& note) {
+  Snapshot snap;
+  snap.status = note;
+  snap.seconds = audio.seconds();
+  snap.hasSample = true;
+  const auto frames = audio.frames();
+  if (frames > 0) {
+    // Computed once here at a fixed resolution, and the editor resamples. Doing
+    // it per repaint is what put the UI on the audio lock to begin with.
+    snap.peaks.resize(kSnapshotColumns, 0.0f);
+    snap.rms.resize(kSnapshotColumns, 0.0f);
+    const auto per = std::max<std::size_t>(1, frames / kSnapshotColumns);
+    for (int i = 0; i < kSnapshotColumns; ++i) {
+      const std::size_t at = static_cast<std::size_t>(i) * per;
+      float peak = 0.0f;
+      double sum = 0.0;
+      std::size_t n = 0;
+      for (const auto& ch : audio.channels) {
+        for (std::size_t j = at; j < std::min(frames, at + per); ++j) {
+          peak = std::max(peak, std::fabs(ch[j]));
+          sum += static_cast<double>(ch[j]) * ch[j];
+          ++n;
+        }
       }
+      snap.peaks[static_cast<std::size_t>(i)] = peak;
+      snap.rms[static_cast<std::size_t>(i)] = n ? static_cast<float>(std::sqrt(sum / double(n))) : 0.0f;
     }
-    out[static_cast<std::size_t>(i)] = peak;
+    snap.voiceAt.reserve(v.size());
+    snap.voiceSlice.reserve(v.size());
+    for (const auto& voice : v) {
+      snap.voiceAt.push_back(static_cast<float>(voice.start) / static_cast<float>(frames));
+      snap.voiceSlice.push_back(voice.slice);
+    }
   }
-  return out;
+  const juce::ScopedLock sl(uiLock);
+  ui = std::move(snap);
 }
 
 std::vector<float> HazenSamplerProcessor::rms(int columns) const {
-  std::vector<float> out;
-  const juce::ScopedLock sl(audioLock);
-  if (rendered.frames() == 0 || columns <= 0) return out;
-  out.resize(static_cast<std::size_t>(columns), 0.0f);
-  const auto per = std::max<std::size_t>(1, rendered.frames() / static_cast<std::size_t>(columns));
-  for (int i = 0; i < columns; ++i) {
-    const std::size_t at = static_cast<std::size_t>(i) * per;
-    double sum = 0.0;
-    std::size_t n = 0;
-    for (const auto& ch : rendered.channels) {
-      for (std::size_t j = at; j < std::min(rendered.frames(), at + per); ++j) {
-        sum += static_cast<double>(ch[j]) * ch[j];
-        ++n;
-      }
-    }
-    out[static_cast<std::size_t>(i)] = n ? static_cast<float>(std::sqrt(sum / double(n))) : 0.0f;
-  }
-  return out;
+  const juce::ScopedLock sl(uiLock);
+  return resample(ui.rms, columns);
 }
 
 juce::String HazenSamplerProcessor::exportName() const {
-  const juce::ScopedLock sl(audioLock);
+  const juce::ScopedLock sl(sourceLock);
   auto base = loadedName.isEmpty() ? juce::String("hazen") : loadedName.upToLastOccurrenceOf(".", false, false);
   if (base.isEmpty()) base = "hazen";
   const auto what = modeIndex == 1 ? "chop" : "mangle";
-  return base + "-" + what + "-" + juce::String(juce::roundToInt(hostBpm)) + "bpm";
+  return base + "-" + what + "-" + juce::String(juce::roundToInt(hostBpm.load())) + "bpm";
 }
 
 bool HazenSamplerProcessor::exportTo(const juce::File& file) const {
-  hazen::Audio copy;
-  {
-    const juce::ScopedLock sl(audioLock);
-    if (rendered.frames() == 0) return false;
-    copy = rendered;
-  }
+  const int slot = liveTake.load(std::memory_order_acquire);
+  if (slot < 0) return false;
+  const hazen::Audio copy = takes[static_cast<std::size_t>(slot)].audio;
+  if (copy.frames() == 0) return false;
   file.deleteFile();
   auto stream = std::unique_ptr<juce::FileOutputStream>(file.createOutputStream());
   if (stream == nullptr) return false;
@@ -607,21 +696,13 @@ bool HazenSamplerProcessor::stepRoll(int delta) {
 }
 
 std::vector<float> HazenSamplerProcessor::voiceStarts() const {
-  std::vector<float> out;
-  const juce::ScopedLock sl(audioLock);
-  if (rendered.frames() == 0) return out;
-  out.reserve(voices.size());
-  for (const auto& v : voices)
-    out.push_back(static_cast<float>(v.start) / static_cast<float>(rendered.frames()));
-  return out;
+  const juce::ScopedLock sl(uiLock);
+  return ui.voiceAt;
 }
 
 std::vector<int> HazenSamplerProcessor::voiceSlices() const {
-  std::vector<int> out;
-  const juce::ScopedLock sl(audioLock);
-  out.reserve(voices.size());
-  for (const auto& v : voices) out.push_back(v.slice);
-  return out;
+  const juce::ScopedLock sl(uiLock);
+  return ui.voiceSlice;
 }
 
 juce::AudioProcessorEditor* HazenSamplerProcessor::createEditor() {

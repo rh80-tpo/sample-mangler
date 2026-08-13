@@ -4,6 +4,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <array>
+#include <atomic>
+
 #include "hazen/chop.hpp"
 
 /**
@@ -59,11 +62,11 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   bool hasSample() const;
   bool isRendering() const { return rendering.load(); }
   double renderedSeconds() const;
-  /// A copy of the rendered peaks for drawing, or empty if there is nothing yet.
+  /// Peaks for drawing, resampled from a snapshot the render thread published.
+  /// Never touches anything the audio thread reads.
   std::vector<float> peaks(int columns) const;
   /// Per-column rms, parallel to peaks(). Drawn as a brighter core inside the
-  /// envelope so loud-and-dense reads differently from loud-and-spiky, which is
-  /// most of what a waveform is for.
+  /// envelope so loud-and-dense reads differently from loud-and-spiky.
   std::vector<float> rms(int columns) const;
   /// 0 to 1 through the rendered buffer, or -1 when idle.
   float playPosition() const;
@@ -108,60 +111,102 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   /// Which source slice each voice came from, parallel to voiceStarts().
   std::vector<int> voiceSlices() const;
   /// The grid in use: the host's tempo when synced, the tempo knob otherwise.
-  double tempo() const { return hostBpm; }
+  double tempo() const { return hostBpm.load(); }
 
  private:
   void run() override;  // the render thread
   void renderNow();
   void readParameters();
+  void publishForEditor(const hazen::Audio&, const std::vector<hazen::Voice>&,
+                        const juce::String& note);
 
   static juce::AudioProcessorValueTreeState::ParameterLayout layout();
 
   juce::AudioFormatManager formats;
 
-  // Guards `source` and `rendered`, both of which the audio thread reads.
-  mutable juce::CriticalSection audioLock;
-  hazen::Audio source;   ///< the loaded file, untouched
-  hazen::Audio rendered; ///< what actually plays
-  std::vector<hazen::Voice> voices; ///< chop boundaries, for the editor
+  // --- threading -------------------------------------------------------
+  //
+  // The audio thread does not lock. It used to take a try-lock on the same
+  // mutex the editor's 20Hz timer took for peaks, waveform and status, and when
+  // the timer held it processBlock bailed out and emitted a whole block of
+  // silence. Measured under normal editor load: 20.7% of blocks dropped. That is
+  // the clicking, and a bigger buffer made it worse rather than better, because
+  // a dropped block is a longer hole.
+  //
+  // So: finished takes are published into one of three slots and pointed at by
+  // an atomic index. Three, not two, so the render thread can never overwrite
+  // the slot the audio thread is reading or the one it is crossfading out of.
+  struct Take {
+    hazen::Audio audio;
+    std::vector<hazen::Voice> voices;
+  };
+  std::array<Take, 3> takes;
+  std::atomic<int> liveTake{-1};
+  int writeTake = 0;
+
+  /// Guards the source only. The audio thread never reads it.
+  mutable juce::CriticalSection sourceLock;
+  hazen::Audio source;
   juce::String loadedName;
-  juce::String statusText{"drop a sample"};
+
+  /// What the editor draws, published by the render thread. Its own lock, so
+  /// the UI can never stall the audio thread.
+  struct Snapshot {
+    std::vector<float> peaks;
+    std::vector<float> rms;
+    std::vector<float> voiceAt;
+    std::vector<int> voiceSlice;
+    juce::String status{"drop a sample"};
+    double seconds = 0.0;
+    bool hasSample = false;
+  };
+  static constexpr int kSnapshotColumns = 1024;
+  mutable juce::CriticalSection uiLock;
+  Snapshot ui;
 
   std::atomic<bool> rendering{false};
   std::atomic<bool> dirty{false};
+  std::atomic<float> position{-1.0f};
 
   /// Past rolls, as parameter snapshots. Tiny next to keeping the audio.
   std::vector<juce::ValueTree> rolls;
   std::size_t rollAt = 0;
   juce::Random dice;
-  /// Feeds both the chop's rhythm and the rack's chop. Changing it is what makes
-  /// a rechop different from the last one.
   std::uint32_t rollSeed = 1;
 
-  // Settings snapshot, read on the message thread, used by the render thread.
+  // Settings snapshot, read on the render thread.
   hazen::MangleSettings mangle;
   hazen::ChopSettings chopping;
-  int modeIndex = 0;   ///< 0 mangle, 1 chop
+  int modeIndex = 0;
   double barsWanted = 2.0;
   float duckAmount = 0.0f;
   int duckRate = 4;
   float duckRelease = 0.45f;
   float levelDb = 0.0f;
-  double hostBpm = 120.0;
+  std::atomic<double> hostBpm{120.0};
 
   // --- playback --------------------------------------------------------
-  // A voice is just a position in the rendered buffer. One at a time: this is a
-  // loop player, and two copies of the same loop overlapping is never what you
-  // want.
   std::atomic<bool> playing{false};
-  /// Set by the play button. Kept apart from `playing` so the sync branch cannot
-  /// switch off a playback the user started while the host sits stopped.
   std::atomic<bool> manualPlay{false};
-  /// Set by the actions that mean "this is a new idea" — rechop, reroll, load.
-  /// A plain knob tweak leaves the playhead alone, because losing your place
-  /// every time you nudge a dial is worse than keeping it.
   std::atomic<bool> restartPending{false};
+  /// Asks the audio thread to jump to the top. Set by play and by the actions
+  /// that mean "this is a new idea".
+  std::atomic<bool> rewind{false};
+
+  // Audio-thread only below this line.
   double playHead = 0.0;
+  int readingTake = -1;
+  /// Crossfade between takes, so swapping the buffer under a playing loop is a
+  /// blend rather than a step.
+  int fadeFrom = -1;
+  double fadeFromHead = 0.0;
+  int fadePos = 0;
+  int fadeLength = 0;
+  /// Transport ramp. A hard start or stop is a step to or from full amplitude,
+  /// which is a click by definition.
+  float gain = 0.0f;
+  float gainStep = 0.0f;
+
   bool syncToHost = false;
   double lastHostPpq = -1.0;
 

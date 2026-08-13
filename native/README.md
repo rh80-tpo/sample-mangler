@@ -86,6 +86,37 @@ somewhere specific.
 It reads the host tempo and re-renders when it changes, so a chop built in a
 140 BPM set is cut for 140.
 
+## The audio thread does not lock
+
+Worth knowing because it was a real bug and the fix shapes the whole class.
+
+`processBlock` used to take a try-lock on the same mutex the editor's 20Hz timer
+used for peaks, waveform and status — and `peaks` and `rms` each scanned the
+entire rendered buffer while holding it, millions of samples for a 32 bar chop.
+Every time the lock was busy the audio thread gave up and emitted a block of
+silence. That is constant clicking, and raising the buffer size makes it *worse*,
+because a dropped block is then a longer hole.
+
+Now:
+
+- Finished takes are published into one of three slots behind an atomic index.
+  Three, so the render thread can never overwrite the slot the audio thread is
+  reading or the one it is crossfading out of.
+- Everything the editor draws is computed once per render into a snapshot with
+  its own lock. The UI cannot stall the audio thread because they share nothing.
+- Swapping takes under a playing loop crossfades over 8ms, and start/stop ramp
+  over 6ms. A hard switch between buffers, or to and from full amplitude, is a
+  step — which is a click by definition.
+
+`harness/contention.cpp` runs the same playback twice, once quiet and once with
+the editor's accessors hammered from another thread, and compares them sample for
+sample. Last run: **0 of 409,600 samples differ.**
+
+```bash
+cmake --build build --target HazenClick --config Release
+./build/HazenClick_artefacts/Release/HazenClick
+```
+
 ## Why it is a sampler and not a port
 
 The web build renders the whole chain offline, once, and plays the result. That
