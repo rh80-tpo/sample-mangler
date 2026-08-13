@@ -1730,3 +1730,58 @@
     margin-left: 0;
   }
 }
+
+/* --- the chopper's mangle switch ---------------------------------------
+ *
+ * Its own header above the rack rather than a control inside it: bypassing
+ * everything is a different decision from tweaking one module, and it should be
+ * reachable without reading the rack first.
+ */
+.rackhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border: var(--edge) solid var(--hairline);
+  border-bottom: 0;
+  background: var(--ground-raised);
+}
+
+.rackhead__title {
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  color: var(--signal);
+}
+
+.rackhead__switch {
+  min-height: 28px;
+  padding: 0 var(--sp-3);
+  border: var(--edge) solid var(--hairline-strong);
+  background: transparent;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: var(--step--2);
+  letter-spacing: var(--tracking-mono);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.rackhead__switch[aria-pressed='true'] {
+  background: var(--signal);
+  border-color: var(--signal);
+  color: var(--ground);
+}
+
+.rackhead__note {
+  margin-left: auto;
+  font-size: var(--step--2);
+  color: var(--ink-faint);
+}
+
+@media (max-width: 720px) {
+  .rackhead__note {
+    margin-left: 0;
+  }
+}

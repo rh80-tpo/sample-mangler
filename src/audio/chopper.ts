@@ -1,4 +1,4 @@
-import { applyEdgeFades, normalizeInPlace, type Pcm } from './buffers'
+import { applyEdgeFades, foldLoopSeam, normalizeInPlace, type Pcm } from './buffers'
 import { fft } from './dsp'
 import { mulberry32, type Rng } from './rng'
 
@@ -282,6 +282,51 @@ function buildPhrase(
   return out
 }
 
+/**
+ * Lay phrases out in pattern order.
+ *
+ * Each phrase is folded back to `frames` first, so a phrase that grew under an
+ * effect — a reverb tail, a pitch shifter's overhang — wraps onto its own head
+ * rather than pushing the loop off the grid. The fold is why a treated phrase
+ * still joins to itself, and because every repeat of a letter is the same buffer,
+ * the arrangement survives whatever the rack did.
+ */
+export function stitchPhrases(
+  phrases: Record<string, Pcm>,
+  order: string[],
+  frames: number,
+): Pcm {
+  const first = phrases[order[0]]
+  const channels = first.channels.length
+  const total = frames * order.length
+  const out: Pcm = {
+    sampleRate: first.sampleRate,
+    channels: Array.from({ length: channels }, () => new Float32Array(total)),
+  }
+  const folded: Record<string, Pcm> = {}
+  for (const letter of Object.keys(phrases)) {
+    const p = phrases[letter]
+    folded[letter] =
+      p.channels[0].length > frames
+        ? foldLoopSeam(p, frames)
+        : {
+            sampleRate: p.sampleRate,
+            channels: p.channels.map((ch) => {
+              const padded = new Float32Array(frames)
+              padded.set(ch.subarray(0, Math.min(ch.length, frames)))
+              return padded
+            }),
+          }
+  }
+  order.forEach((letter, idx) => {
+    const src = folded[letter]
+    for (let c = 0; c < channels; c++) {
+      out.channels[c].set(src.channels[Math.min(c, src.channels.length - 1)], idx * frames)
+    }
+  })
+  return out
+}
+
 const LETTERS: Record<Pattern, string[]> = {
   AAAB: ['A', 'A', 'A', 'B'],
   ABAB: ['A', 'B', 'A', 'B'],
@@ -298,6 +343,18 @@ export type ChopResult = {
   /** Bar index where each phrase starts, and which letter it is. */
   sections: { bar: number; letter: string }[]
   bars: number
+  /**
+   * The distinct phrases, keyed by letter, before arrangement.
+   *
+   * Exposed so effects can be applied per phrase and the loop restitched. Run
+   * over the whole 16 bars instead, a chop reorders material across phrase
+   * boundaries and a reverb tail or a pitch grain smears through them, and the
+   * arrangement the pattern exists to create is destroyed — measured: a dry AAAB
+   * read back as ABCD once any of those was in the rack.
+   */
+  phrases: Record<string, Pcm>
+  /** The four letters, in order. */
+  order: string[]
   /**
    * Every voice in the finished loop, as fractions of the whole.
    *
@@ -426,6 +483,11 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
   normalizeInPlace(out)
   applyEdgeFades(out, 0.002)
 
+  const phrases: Record<string, Pcm> = {}
+  for (const letter of unique) {
+    phrases[letter] = { sampleRate: sr, channels: rendered[letter] }
+  }
+
   return {
     pcm: out,
     slices: slices.length,
@@ -433,5 +495,7 @@ export function buildChop(pcm: Pcm, options: ChopOptions): ChopResult {
     sections,
     bars: PHRASE_BARS * letters.length,
     voices,
+    phrases,
+    order: letters,
   }
 }

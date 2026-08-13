@@ -261,7 +261,16 @@ void HazenSamplerProcessor::renderNow() {
     // fitting afterwards: the chop is already exact, and a reverb tail is meant
     // to ring past the loop rather than be trimmed back into it.
     if (rackActive()) {
-      hazen::run_mangle(out, mangle);
+      // Per phrase, then restitched. Running the rack over the whole loop
+      // reordered and smeared material across phrase boundaries and destroyed
+      // the arrangement the pattern exists to create.
+      const auto frames = chopped.phrases[static_cast<std::size_t>(chopped.order[0])].frames();
+      auto treated = chopped.phrases;
+      for (auto& phrase : treated) {
+        if (phrase.frames() == 0) continue;
+        hazen::run_mangle(phrase, mangle);
+      }
+      out = hazen::stitch_phrases(treated, chopped.order, frames);
       note += kDot + juce::String("racked");
     }
   } else {

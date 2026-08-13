@@ -20,13 +20,13 @@ import {
   type Pcm,
 } from './audio/buffers'
 import { renderChain } from './audio/render'
-import { DEFAULT_BPM } from './audio/fit'
+import { DEFAULT_BPM, NO_FIT } from './audio/fit'
 import { encodeWav, QUANTISATION_STEP } from './audio/wav'
 import { freshSeed } from './audio/rng'
 import { GENERATORS, generateSample } from './audio/generate'
 import { DecodeError, decodeAudio } from './audio/decode'
 import { detectKey } from './audio/key'
-import { PATTERNS, buildChop, slicesFromGrid } from './audio/chopper'
+import { PATTERNS, buildChop, slicesFromGrid, stitchPhrases } from './audio/chopper'
 import { Playback } from './audio/playback'
 import {
   DEFAULT_SIDECHAIN,
@@ -423,6 +423,75 @@ async function run() {
         'monitor leaves the audio untouched',
         peakOf(probe) === before,
         `peak still ${before.toFixed(5)} after playing at monitor 0.4`,
+      )
+    }
+    log()
+  }
+
+  // --- the arrangement survives the rack --------------------------------
+  // This is the bug the chopper actually had. The rack used to run across the
+  // whole 16 bars, so a chop reordered material across phrase boundaries and a
+  // reverb tail or a pitch grain smeared through them: a dry AAAB measured as
+  // ABCD with any of those in the chain. Effects now run per phrase and the loop
+  // is restitched, which keeps every repeat of a letter identical by
+  // construction. Checked by reading the arrangement back out of the audio.
+  {
+    log('=== the arrangement survives the rack ===')
+    log()
+    const vocal = generateSample('vocal', ctx.sampleRate, 20250812)
+    const base = {
+      bpm: 140, density: 0.55, variation: 0.6, resolution: 16 as const,
+      inOrder: false, phraseBars: 4 as const, hold: 0.25,
+      quantize: 'transient' as const, seed: 4242,
+    }
+    const readLetters = (pcm: Pcm) => {
+      const q = Math.floor(pcm.channels[0].length / 4)
+      const same = (a: number, b: number) => {
+        for (let i = 4000; i < q - 4000; i += 5) {
+          if (Math.abs(pcm.channels[0][a * q + i] - pcm.channels[0][b * q + i]) > 1e-6) return false
+        }
+        return true
+      }
+      const out = ['A']
+      for (let i = 1; i < 4; i++) {
+        let found: string | null = null
+        for (let j = 0; j < i; j++) if (same(i, j)) { found = out[j]; break }
+        out.push(found ?? String.fromCharCode(65 + new Set(out).size))
+      }
+      return out.join('')
+    }
+
+    const chains: { name: string; chain: ChainSpec }[] = [
+      { name: 'chop 48seg', chain: { seed: 7, effects: [{ id: 'chop', enabled: true, segments: 48, reorder: 0.5, repeat: 0.3, gate: 0.1 }] } },
+      { name: 'reverb', chain: { seed: 7, effects: [{ id: 'reverb', enabled: true, size: 0.6, damp: 4000, mix: 0.4 }] } },
+      { name: 'pitch -5', chain: { seed: 7, effects: [{ id: 'pitch', enabled: true, semitones: -5, windowSize: 0.06 }] } },
+      { name: 'crush + drive', chain: { seed: 7, effects: [{ id: 'bitcrush', enabled: true, bits: 6, divisor: 6 }, { id: 'drive', enabled: true, amount: 0.5, oversample: '2x' }] } },
+    ]
+
+    for (const pattern of PATTERNS.map((p) => p.id)) {
+      const built = buildChop(vocal, { ...base, pattern })
+      check(`${pattern} dry`, readLetters(built.pcm) === pattern, `reads ${readLetters(built.pcm)}`)
+    }
+
+    const built = buildChop(vocal, { ...base, pattern: 'AAAB' })
+    const frames = built.phrases[built.order[0]].channels[0].length
+    for (const c of chains) {
+      const treated: Record<string, Pcm> = {}
+      for (const letter of Object.keys(built.phrases)) {
+        const { pcm } = await renderChain(built.phrases[letter], c.chain, NO_FIT)
+        treated[letter] = pcm
+      }
+      const out = stitchPhrases(treated, built.order, frames)
+      const reads = readLetters(out)
+      check(
+        `AAAB survives ${c.name}`,
+        reads === 'AAAB',
+        `reads ${reads}, ${durationOf(out).toFixed(2)}s vs ${durationOf(built.pcm).toFixed(2)}s`,
+      )
+      check(
+        `${c.name} keeps the loop on the grid`,
+        Math.abs(durationOf(out) - durationOf(built.pcm)) < 0.005,
+        `${durationOf(out).toFixed(3)}s`,
       )
     }
     log()

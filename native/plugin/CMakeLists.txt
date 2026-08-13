@@ -5,8 +5,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
 
-# Universal where the toolchain can, so the same build loads in an Intel host.
-set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+# Universal, so the same file loads on Apple Silicon and on Intel. Worth the
+# doubled build time: an arm64-only bundle simply does not appear in the plugin
+# list on an Intel Mac, which looks like a broken download rather than a wrong
+# architecture. Override with -DHAZEN_ARCHS=arm64 for a faster local build.
+set(HAZEN_ARCHS "arm64;x86_64" CACHE STRING "Architectures to build")
+set(CMAKE_OSX_ARCHITECTURES "${HAZEN_ARCHS}" CACHE STRING "" FORCE)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../vendor/JUCE JUCE)
 

@@ -237,7 +237,65 @@ struct ChopResult {
   int onset_count = 0;
   int bars = 0;
   std::vector<Voice> voices;
+  /// The distinct phrases before arrangement, indexed by letter (0=A, 1=B, 2=C).
+  /// Exposed so effects can be applied per phrase — run over the whole 16 bars
+  /// instead, a chop reorders material across phrase boundaries and a reverb tail
+  /// smears through them, and the arrangement is destroyed. Measured on the web
+  /// build: a dry AAAB read back as ABCD with any of those in the chain.
+  std::array<Audio, 3> phrases;
+  /// The four letters, in order.
+  std::array<int, 4> order{};
 };
+
+/**
+ * Lay phrases out in pattern order.
+ *
+ * Each is folded back to `frames` first, so a phrase that grew under an effect
+ * wraps onto its own head rather than pushing the loop off the grid. Because
+ * every repeat of a letter is the same buffer, the arrangement survives whatever
+ * the effects did to it.
+ */
+inline Audio stitch_phrases(const std::array<Audio, 3>& phrases,
+                            const std::array<int, 4>& order, std::size_t frames) {
+  Audio out;
+  const auto& first = phrases[static_cast<std::size_t>(order[0])];
+  out.sample_rate = first.sample_rate;
+  out.resize(first.channel_count(), frames * order.size());
+
+  std::array<Audio, 3> folded;
+  for (std::size_t i = 0; i < phrases.size(); ++i) {
+    const auto& p = phrases[i];
+    if (p.frames() == 0) continue;
+    folded[i].sample_rate = p.sample_rate;
+    folded[i].resize(p.channel_count(), frames);
+    for (int c = 0; c < p.channel_count(); ++c) {
+      auto& dst = folded[i].channels[static_cast<std::size_t>(c)];
+      const auto& src = p.channels[static_cast<std::size_t>(c)];
+      const auto n = std::min(frames, src.size());
+      std::copy(src.begin(), src.begin() + static_cast<std::ptrdiff_t>(n), dst.begin());
+      if (src.size() > frames) {
+        // Reuse the loop-seam fold so the overrun wraps instead of being cut.
+        std::vector<float> withTail = src;
+        fold_loop_seam(withTail.data(), withTail.size(), frames);
+        std::copy(withTail.begin(), withTail.begin() + static_cast<std::ptrdiff_t>(frames),
+                  dst.begin());
+      }
+    }
+  }
+
+  for (std::size_t idx = 0; idx < order.size(); ++idx) {
+    const auto& src = folded[static_cast<std::size_t>(order[idx])];
+    if (src.frames() == 0) continue;
+    for (int c = 0; c < out.channel_count(); ++c) {
+      const auto& from = src.channels[static_cast<std::size_t>(
+          std::min(c, src.channel_count() - 1))];
+      std::copy(from.begin(), from.end(),
+                out.channels[static_cast<std::size_t>(c)].begin() +
+                    static_cast<std::ptrdiff_t>(idx * frames));
+    }
+  }
+  return out;
+}
 
 /// Build the loop.
 inline ChopResult build_chop(const Audio& source, const ChopSettings& s) {
@@ -375,6 +433,8 @@ inline ChopResult build_chop(const Audio& source, const ChopSettings& s) {
   for (auto& ch : result.audio.channels) ptrs.push_back(ch.data());
   normalise(ptrs.data(), result.audio.channel_count(), result.audio.frames());
 
+  for (std::size_t i = 0; i < rendered.size(); ++i) result.phrases[i] = rendered[i].audio;
+  for (std::size_t i = 0; i < letters.size(); ++i) result.order[i] = letters[i];
   result.bars = s.phrase_bars * static_cast<int>(letters.size());
   return result;
 }

@@ -24,6 +24,7 @@ import {
   PATTERNS,
   QUANTIZE_CHOICES,
   buildChop,
+  stitchPhrases,
   type ChopResult,
   type Pattern,
   type Quantize,
@@ -78,6 +79,8 @@ export function Chopper() {
   const [phraseBars, setPhraseBars] = useState<1 | 2 | 4>(DEFAULT_CHOP.phraseBars)
   const [hold, setHold] = useState(DEFAULT_CHOP.hold)
   const [quantize, setQuantize] = useState<Quantize>(DEFAULT_CHOP.quantize)
+  /** Master switch for the rack. Off means the chop plays dry. */
+  const [rackOn, setRackOn] = useState(true)
 
   /** Effects applied to the finished chop. Null until one is added. */
   const [chain, setChain] = useState<ChainSpec | null>(null)
@@ -204,13 +207,10 @@ export function Chopper() {
   })
 
   const runChain = useCallback(
-    async (next: ChainSpec | null, baseOverride?: Pcm) => {
-      // `baseOverride` exists so a chop and a roll can happen in one press: the
-      // freshly built loop is passed in directly rather than waiting for the
-      // state holding it to commit.
-      const base = baseOverride ?? result?.pcm
-      if (!base) return
-      if (!next || next.effects.length === 0) {
+    async (next: ChainSpec | null, from?: ChopResult) => {
+      const built = from ?? result
+      if (!built) return
+      if (!next || next.effects.length === 0 || !rackOn) {
         setProcessed(null)
         return
       }
@@ -222,8 +222,21 @@ export function Chopper() {
       try {
         let target: ChainSpec | null = next
         while (target) {
-          const { pcm } = await renderChain(base, target, NO_FIT)
-          setProcessed(pcm)
+          // Per phrase, not over the whole loop.
+          //
+          // Running the rack across all 16 bars reorders and smears material
+          // across phrase boundaries, and the arrangement is gone: a dry AAAB
+          // measured as ABCD with a chop, a reverb or a pitch shift in the
+          // chain. Treating each distinct phrase and then restitching keeps
+          // every repeat of a letter identical by construction, so the pattern
+          // survives whatever the effects do.
+          const frames = built.phrases[built.order[0]].channels[0].length
+          const treated: Record<string, Pcm> = {}
+          for (const letter of Object.keys(built.phrases)) {
+            const { pcm } = await renderChain(built.phrases[letter], target, NO_FIT)
+            treated[letter] = pcm
+          }
+          setProcessed(stitchPhrases(treated, built.order, frames))
           target = queue.current.pending
           queue.current.pending = null
         }
@@ -233,7 +246,7 @@ export function Chopper() {
         queue.current.running = false
       }
     },
-    [result],
+    [result, rackOn],
   )
 
   /**
@@ -278,7 +291,7 @@ export function Chopper() {
         if (rollRack) {
           const rolled = rollChain(freshSeed(), durationOf(built.pcm))
           setChain(rolled)
-          await runChain(rolled, built.pcm)
+          await runChain(rolled, built)
         }
       } catch (e) {
         setError(e instanceof Error ? `chop failed. ${e.message}` : 'chop failed.')
@@ -362,6 +375,13 @@ export function Chopper() {
     resumeAt.current = null
     void playback.play(output, at, { loop, kick })
   }, [output, playback, loop, kick])
+
+  // The master switch has to reach the audio, not just grey the modules out.
+  useEffect(() => {
+    if (!rackOn) setProcessed(null)
+    else if (chain) void runChain(chain)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rackOn])
 
   // Rebuild when a control moves, but only once something exists.
   const first = useRef(true)
@@ -723,14 +743,42 @@ export function Chopper() {
         </div>
       </section>
 
-      {/* The rack colours the finished loop. Empty until you add something, so
-          it never sits there taking height from the waveforms for nothing. */}
+      {/* The rack colours each phrase, so the arrangement survives it. Empty
+          until you add something, so it never sits there taking height from the
+          waveforms for nothing. */}
+      {result ? (
+        <section className="rackhead" aria-label="Effects">
+          <span className="rackhead__title">mangle</span>
+          <button
+            type="button"
+            className="rackhead__switch"
+            aria-pressed={rackOn}
+            disabled={busy}
+            onClick={() => setRackOn(!rackOn)}
+            title={
+              rackOn
+                ? 'Effects are on. Turn off to hear the chop dry.'
+                : 'Effects are bypassed. Turn on to hear them again.'
+            }
+          >
+            {rackOn ? 'on' : 'off'}
+          </button>
+          <span className="rackhead__note">
+            {chain && chain.effects.length
+              ? rackOn
+                ? `${chain.effects.length} ${chain.effects.length === 1 ? 'effect' : 'effects'} on each phrase, so the pattern holds`
+                : `${chain.effects.length} ${chain.effects.length === 1 ? 'effect' : 'effects'} bypassed`
+              : 'add an effect, or hit rechop + mangle'}
+          </span>
+        </section>
+      ) : null}
+
       {result ? (
         <Rack
           chain={chain ?? { seed: 0, effects: [] }}
           onChange={onChainChange}
-          seconds={durationOf(result.pcm)}
-          busy={busy}
+          seconds={durationOf(result.pcm) / 4}
+          busy={busy || !rackOn}
         />
       ) : null}
 

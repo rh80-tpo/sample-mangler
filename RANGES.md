@@ -65,6 +65,26 @@ quietly meaning something else. It is the grid the bar fitting, the loop seam
 fold, and the sidechain's kick spacing are all measured against, which is why it
 sits in its own row rather than in a corner of the length row.
 
+## The rack on the chopper
+
+The effects run **per phrase**, then the loop is restitched in pattern order.
+
+This was a real bug, and it is worth recording how it presented. The rack used to
+run across the whole 16 bars, which quietly destroyed the arrangement the pattern
+exists to create: a chop reordered material across phrase boundaries, and a
+reverb tail or a pitch grain smeared through them. Measured by reading the
+arrangement back out of the audio, a dry AAAB came out as **ABCD** with any of
+chop, reverb or pitch in the chain. Every phrase became unique, so the pattern
+was decoration.
+
+Treating each distinct phrase and then arranging keeps every repeat of a letter
+identical by construction, so the pattern survives whatever the effects do. A
+phrase that grows under an effect is folded back onto its own head rather than
+pushed off the grid, which is why a treated 16 bar loop is still exactly 16 bars.
+
+`mangle` has a master switch. Bypassing the whole rack is a different decision
+from tweaking one module, and it should not require reading the rack first.
+
 ## Where the cuts land
 
 The chopper has two grids and they do different jobs. `resolution` decides where
