@@ -218,7 +218,12 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
   addAndMakeVisible(loadButton);
   loadButton.onClick = [this] {
     chooser = std::make_unique<juce::FileChooser>(
-        "Load a sample", juce::File{}, "*.wav;*.aif;*.aiff;*.mp3;*.flac;*.m4a;*.caf;*.ogg");
+        "Load a sample", juce::File{},
+        // Video containers included on purpose: taking the audio out of an mp4
+        // is a normal thing to want, and CoreAudio reads the audio track of one
+        // directly. Not being able to pick the file is a worse failure than
+        // picking it and being told why it did not work.
+        "*.wav;*.aif;*.aiff;*.mp3;*.flac;*.m4a;*.caf;*.ogg;*.aac;*.mp4;*.m4v;*.mov;*.3gp;*.m4b");
     chooser->launchAsync(juce::FileBrowserComponent::openMode |
                              juce::FileBrowserComponent::canSelectFiles,
                          [this](const juce::FileChooser& fc) {
@@ -739,13 +744,15 @@ void HazenSamplerEditor::DragOut::mouseDrag(const juce::MouseEvent&) {
 
 bool HazenSamplerEditor::isInterestedInFileDrag(const juce::StringArray& files) {
   for (const auto& f : files) {
-    // Deliberately wide. A file the host refuses to even offer is worse than one
-    // that fails with a message, which is what the web build learned from AIFF.
-    if (f.endsWithIgnoreCase(".wav") || f.endsWithIgnoreCase(".aif") ||
-        f.endsWithIgnoreCase(".aiff") || f.endsWithIgnoreCase(".mp3") ||
-        f.endsWithIgnoreCase(".flac") || f.endsWithIgnoreCase(".m4a") ||
-        f.endsWithIgnoreCase(".caf") || f.endsWithIgnoreCase(".ogg")) {
-      return true;
+    // Deliberately wide, and it includes video. A file the host refuses to even
+    // offer is worse than one that fails with a message — the lesson the web
+    // build learned from AIFF — and dropping an mp4 in for its audio is a normal
+    // thing to do rather than a mistake to guard against.
+    static const char* kTakes[] = {".wav", ".aif", ".aiff", ".mp3",  ".flac", ".m4a",
+                                   ".caf", ".ogg", ".aac",  ".mp4",  ".m4v",  ".mov",
+                                   ".3gp", ".m4b", ".au",   ".snd"};
+    for (const auto* ext : kTakes) {
+      if (f.endsWithIgnoreCase(ext)) return true;
     }
   }
   return false;

@@ -45,6 +45,26 @@ chop guarantees real scatter and stutter.
 | drive | amount | 0.18 to 0.62, or 0.62 to 0.92 on a 25% "hard" branch | 0 to 1 | Past ~0.7 Tone.Distortion is mostly square wave; under ~0.15 it is inaudible. |
 | drive | alias | 2x or 4x 80% of the time, else none | none / 2x / 4x | Oversampling is on most of the time because the aliasing without it reads as a bug rather than a choice. It gets switched off deliberately, not by accident. |
 
+## Video files
+
+Drop a video in and it takes the audio out. Both builds accept mp4; the browser
+also reads mov, because Chromium's decoder pulls the audio track out of a
+QuickTime container directly.
+
+Nothing needed writing to make this work — the decoders already handled it. What
+was missing was permission: the file pickers and drag filters did not list video
+extensions, so you could not select or drop one. A format that decodes fine but
+cannot be chosen is indistinguishable from one that is unsupported.
+
+| Where | Reads | Does not read |
+| --- | --- | --- |
+| Site | mp4, mov, m4v, 3gp, webm | anything the browser has no decoder for |
+| Plugin | mp4, m4a, 3gp | mov — CoreAudio refuses QuickTime containers that carry video, tested and confirmed |
+
+A video with no audio track gets its own message. "That file is silent" sends you
+looking at the audio; "that video has no audio track" tells you what actually
+happened. The plugin says the same thing in its status line.
+
 ## Tempo
 
 Adjustable, defaulting to 120.

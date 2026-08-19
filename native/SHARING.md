@@ -37,7 +37,9 @@ than after ten minutes of it not showing up.
 
 ## Using it
 
-- Drag an audio file onto the plugin window, or press `load a sample`.
+- Drag an audio file onto the plugin window, or press `load a sample`. Video
+  files work too — drop an **mp4** and it takes the audio out of it. (`.mov` does
+  not: macOS refuses QuickTime containers that carry video.)
 - `mode` picks **mangle** (a chain of destructive effects, bar-locked) or
   **chop** (cuts a vocal into a 16-bar chopped loop).
 - Press `play` to hear it. A MIDI note also triggers it. With `sync` on it

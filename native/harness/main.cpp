@@ -218,6 +218,45 @@ int main() {
   }
   p.stopPlayback();
 
+  // --- video containers -------------------------------------------------
+  // Taking the audio out of an mp4 is a normal thing to want. CoreAudio reads
+  // the audio track of one directly, so the only thing that ever blocked it was
+  // the file filters not listing it.
+  {
+    // Walk up looking for the fixtures rather than assuming a working
+    // directory: this runs from the repo root and from build/ both.
+    juce::File dir;
+    auto probe = juce::File::getCurrentWorkingDirectory();
+    for (int up = 0; up < 5 && dir == juce::File{}; ++up) {
+      const auto candidate = probe.getChildFile("test-audio/mp4");
+      if (candidate.isDirectory()) dir = candidate;
+      probe = probe.getParentDirectory();
+    }
+    struct Case { const char* file; bool shouldLoad; const char* why; };
+    const Case cases[] = {
+        {"video.mp4", true, "h264 + aac, audio taken from the video"},
+        {"audioonly.m4a", true, "plain m4a"},
+        {"silent.mp4", false, "video with no audio track"},
+    };
+    for (const auto& c : cases) {
+      const auto f = dir.getChildFile(c.file);
+      if (!f.existsAsFile()) { printf("  SKIP  %s not present\n", c.file); continue; }
+      const bool ok = p.loadSample(f);
+      const auto label = juce::String(c.file) + (c.shouldLoad ? " loads" : " is refused");
+      check(label.toRawUTF8(), ok == c.shouldLoad,
+            juce::String(c.why) + " -> " + p.status());
+    }
+    // Leave a working sample loaded for anything after this.
+    const auto good = dir.getChildFile("video.mp4");
+    if (good.existsAsFile()) {
+      p.loadSample(good);
+      for (int i = 0; i < 200 && (p.isRendering() || p.renderedSeconds() <= 0.0); ++i)
+        juce::Thread::sleep(25);
+      check("mp4 audio renders", p.renderedSeconds() > 0.0,
+            juce::String(p.renderedSeconds(), 2) + "s from an mp4");
+    }
+  }
+
   check("state round trips", [&] {
     juce::MemoryBlock mb; p.getStateInformation(mb);
     if (mb.getSize() == 0) return false;

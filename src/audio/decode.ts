@@ -382,18 +382,31 @@ export function identify(view: DataView, length: number): string {
     return 'that mp3 is damaged'
   }
   if (brand === 'ftyp') {
-    // Apple Lossless lives in an mp4 container and Chromium cannot decode it,
-    // which is exactly what Logic and Music.app export by default. The codec
-    // name sits in the moov atom, which can be at either end of the file, so
-    // both ends get scanned rather than just the head.
+    // Everything in the mp4 family shares this box: m4a, mp4, mov, 3gp. The
+    // codec and track names live in the moov atom, which can sit at either end
+    // of the file, so both ends get scanned rather than just the head.
     const latin = new TextDecoder('latin1')
     const window = 262144
-    const head = latin.decode(new Uint8Array(view.buffer, 0, Math.min(length, window)))
+    const front = latin.decode(new Uint8Array(view.buffer, 0, Math.min(length, window)))
     const tailAt = Math.max(0, length - window)
-    const tail =
+    const back =
       tailAt > 0 ? latin.decode(new Uint8Array(view.buffer, tailAt, length - tailAt)) : ''
-    if (head.includes('alac') || tail.includes('alac')) {
-      return 'that m4a is apple lossless, which no browser decodes. render it as wav or aiff'
+    const both = front + back
+    const isVideo = both.includes('vide')
+    const hasSound = both.includes('soun')
+
+    // A video dropped in for its audio is a normal thing to do, so the case
+    // worth naming is the one where there is no audio to take.
+    if (isVideo && !hasSound) {
+      return 'that video has no audio track, so there is nothing to sample'
+    }
+    if (both.includes('alac')) {
+      // Apple Lossless lives in an mp4 container and Chromium cannot decode it,
+      // which is exactly what Logic and Music.app export by default.
+      return 'that file is apple lossless, which no browser decodes. render it as wav or aiff'
+    }
+    if (isVideo) {
+      return "that video's audio uses a codec this browser cannot decode. try mp4 or m4a"
     }
     return 'that m4a uses a codec this browser cannot decode'
   }
@@ -460,6 +473,27 @@ export async function describeFile(file: File): Promise<string> {
 }
 
 /** Message for the interface, per failure reason. */
+/** Extensions that usually arrive as video rather than as a sample. */
+const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v', '.webm', '.3gp', '.mkv', '.avi']
+
+export function looksLikeVideo(name: string): boolean {
+  const lower = name.toLowerCase()
+  return VIDEO_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+/**
+ * Why a file that decoded fine came out silent.
+ *
+ * Worth separating from the generic message: dropping a video in to take its
+ * audio is a normal thing to do, and "that file is silent" sends you looking at
+ * the audio when the real answer is that there was never an audio track.
+ */
+export function describeSilent(name: string): string {
+  return looksLikeVideo(name)
+    ? 'that video has no audio track, so there is nothing to sample.'
+    : 'that file is silent.'
+}
+
 export function describeFailure(e: unknown): string {
   if (e instanceof DecodeError) {
     switch (e.reason) {
@@ -477,9 +511,9 @@ export function describeFailure(e: unknown): string {
         const guided = /export|render|damaged|decode/.test(e.message)
         return guided
           ? `${e.message}.`
-          : `${e.message}. wav, aiff, mp3, flac and m4a all work.`
+          : `${e.message}. wav, aiff, mp3, flac, m4a and mp4 all work.`
       }
     }
   }
-  return 'could not read that one. wav, aiff, mp3, flac and m4a all work.'
+  return 'could not read that one. wav, aiff, mp3, flac, m4a and mp4 all work.'
 }

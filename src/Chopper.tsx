@@ -15,6 +15,7 @@ import {
   decodeAudio,
   describeFailure,
   describeFile,
+  describeSilent,
 } from './audio/decode'
 import { freshSeed } from './audio/rng'
 import { rollChain } from './audio/chain'
@@ -47,7 +48,7 @@ import {
 import { addItem, createFolder, listFolders } from './lib/library'
 
 const ACCEPT =
-  'audio/*,.wav,.wave,.aif,.aiff,.aifc,.caf,.mp3,.flac,.m4a,.mp4,.aac,.ogg,.oga,.opus,.webm'
+  'audio/*,video/*,.wav,.wave,.aif,.aiff,.aifc,.caf,.mp3,.flac,.m4a,.mp4,.m4v,.mov,.aac,.3gp,.ogg,.oga,.opus,.webm,.au,.snd'
 
 /** Tempos worth one tap. Anything else goes in the number field. */
 const QUICK_BPM = [90, 100, 110, 120, 128, 140, 150, 174]
@@ -184,7 +185,7 @@ export function Chopper() {
         setSource(pcm)
         setFileName(file.name)
         setResult(null)
-        if (peakOf(pcm) < 1e-4) setError('that file is silent.')
+        if (peakOf(pcm) < 1e-4) setError(describeSilent(file.name))
       } catch (e) {
         setSource(null)
         setResult(null)
@@ -558,9 +559,9 @@ export function Chopper() {
             <div className="drop__inner">
               <p className="drop__head">drop a vocal</p>
               <p className="drop__sub">
-                it cuts the vocal up — on the transients, or straight on the
-                beat — and builds a 16 bar loop from a 4 bar phrase. pick the
-                pattern and the tempo.
+                drop a vocal, or a video to take the audio out of. it cuts the
+                line up — on the transients, or straight on the beat — and
+                builds a 16 bar loop from a 4 bar phrase.
               </p>
               {stage ? (
                 <p className="drop__stage" role="status">

@@ -18,6 +18,7 @@ import {
   decodeAudio,
   describeFailure,
   describeFile,
+  describeSilent,
 } from './audio/decode'
 import { rollChain } from './audio/chain'
 import { renderChain } from './audio/render'
@@ -86,7 +87,7 @@ type RenderQueue = {
  * Better to take anything and say precisely why if it will not decode.
  */
 const ACCEPT =
-  'audio/*,.wav,.wave,.aif,.aiff,.aifc,.caf,.mp3,.flac,.m4a,.mp4,.aac,.ogg,.oga,.opus,.webm,.au,.snd'
+  'audio/*,video/*,.wav,.wave,.aif,.aiff,.aifc,.caf,.mp3,.flac,.m4a,.mp4,.m4v,.mov,.aac,.3gp,.ogg,.oga,.opus,.webm,.au,.snd'
 
 /** Below this peak there is nothing to hear, so say so instead of pretending. */
 const SILENCE_FLOOR = 1e-4
@@ -508,7 +509,7 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
         adopt(pcm, file.name)
         const seconds = durationOf(pcm)
         if (peakOf(pcm) < SILENCE_FLOOR) {
-          setError('that file is silent. nothing to mangle.')
+          setError(describeSilent(file.name))
         } else if (seconds > WARN_SECONDS) {
           // Not a failure, just honest: past this length every roll takes
           // seconds and the page will sit still while it works.
@@ -1166,9 +1167,9 @@ export function App({ embedded = false }: { embedded?: boolean } = {}) {
               <div className="drop__inner">
                 <p className="drop__head">drop a sample</p>
                 <p className="drop__sub">
-                  a loop and vocal chop machine. drop something in or build it
-                  here, roll it, cut the bit you want, keep it. everything sits
-                  at 120.
+                  a loop and vocal chop machine. drop audio in, or a video and
+                  it takes the audio out, or build something here. roll it, cut
+                  the bit you want, keep it.
                 </p>
                 {stage ? (
                   <p className="drop__stage" role="status">

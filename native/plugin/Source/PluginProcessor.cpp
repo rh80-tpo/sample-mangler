@@ -134,8 +134,20 @@ bool HazenSamplerProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
 bool HazenSamplerProcessor::loadSample(const juce::File& file) {
   std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
   if (reader == nullptr) {
+    // Say which kind of failure it is. A video that opens but has no audio
+    // track is a different problem from a corrupt wav, and "could not read"
+    // sends you looking in the wrong place for both.
+    static const char* kVideo[] = {"mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "3gp"};
+    bool video = false;
+    for (const auto* ext : kVideo) video = video || file.hasFileExtension(ext);
     const juce::ScopedLock sl(uiLock);
-    ui.status = "could not read " + file.getFileName();
+    ui.status = video ? file.getFileName() + ": no audio track this can read"
+                      : "could not read " + file.getFileName();
+    return false;
+  }
+  if (reader->numChannels == 0) {
+    const juce::ScopedLock sl(uiLock);
+    ui.status = file.getFileName() + ": no audio track";
     return false;
   }
   const auto frames = static_cast<int>(reader->lengthInSamples);
