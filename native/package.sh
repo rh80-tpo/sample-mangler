@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="HAZEN Sampler"
-VERSION="${1:-0.16}"
+VERSION="${1:-0.19}"
 OUT="dist"
 # Named, because this is the folder name the recipient sees when they unzip.
 STAGE="$OUT/HAZEN Sampler $VERSION"

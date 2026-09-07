@@ -8,6 +8,8 @@
 #include <cstdio>
 #include "../plugin/Source/PluginProcessor.h"
 
+static const juce::String kDot = juce::String::fromUTF8(" \xc2\xb7 ");
+
 static void writeTestWav(const juce::File& f) {
   const double sr = 44100.0;
   const int n = int(sr * 4);
@@ -255,6 +257,158 @@ int main() {
       check("mp4 audio renders", p.renderedSeconds() > 0.0,
             juce::String(p.renderedSeconds(), 2) + "s from an mp4");
     }
+  }
+
+
+  // --- notes, the transport, and the tempo ------------------------------
+  // A note plays the loop while it is held. The host's transport follows the
+  // tempo and nothing else: it used to start playback by itself, and rewind on
+  // every bar, so a 16-bar chop never got past its first bar inside Live.
+  struct FakeHead : juce::AudioPlayHead {
+    double bpm = 120.0; bool rolling = false; double ppq = 0.0;
+    juce::Optional<PositionInfo> getPosition() const override {
+      PositionInfo info;
+      info.setBpm(bpm); info.setIsPlaying(rolling); info.setPpqPosition(ppq);
+      return info;
+    }
+  } head;
+  p.setPlayHead(&head);
+  auto pull = [&](juce::MidiBuffer& midi, int blocks) {
+    juce::AudioBuffer<float> out(2, 512);
+    double sum = 0.0;
+    for (int b = 0; b < blocks; ++b) {
+      out.clear();
+      p.processBlock(out, midi);
+      midi.clear();
+      head.ppq += 512.0 / 44100.0 * head.bpm / 60.0;
+      for (int i = 0; i < 512; ++i) sum += double(out.getSample(0, i)) * out.getSample(0, i);
+    }
+    return std::sqrt(sum / (512.0 * blocks));
+  };
+  {
+    p.stopPlayback();
+    juce::MidiBuffer none;
+    pull(none, 3);
+    head.rolling = true;
+    const double alone = pull(none, 20);
+    check("the transport alone does not play it", alone == 0.0 && !p.isPlaying(),
+          "host rolling, no note: rms " + juce::String(alone, 5));
+
+    juce::MidiBuffer on;
+    on.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+    // Two seconds, and the playhead, rather than the level of the first
+    // quarter second: the loop is a chop with real holes in it, and a check
+    // that reads its opening silence as "not playing" measures the material.
+    const double held = pull(on, 200);
+    const float moved = p.playPosition();
+    check("a note plays it", held > 0.001 && moved > 0.0f && p.isPlaying(),
+          "rms " + juce::String(held, 5) + " over 2.3s, playhead at " + juce::String(moved, 3));
+
+    juce::MidiBuffer off;
+    off.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    pull(off, 2);  // the release ramp
+    const double after = pull(none, 5);
+    check("note-off stops it", after == 0.0 && !p.isPlaying(),
+          "rms " + juce::String(after, 5) + " after the ramp");
+
+    pull(on, 5);
+    p.stopPlayback();
+    pull(none, 2);
+    const double stopped = pull(none, 5);
+    check("stop silences a held note", stopped == 0.0 && !p.isPlaying(),
+          "rms " + juce::String(stopped, 5));
+
+    // Two notes: the second retriggers, releasing one of them does not stop it.
+    juce::MidiBuffer two;
+    two.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+    two.addEvent(juce::MidiMessage::noteOn(1, 62, 1.0f), 100);
+    pull(two, 3);
+    juce::MidiBuffer offOne;
+    offOne.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    pull(offOne, 3);
+    check("one note off of two keeps playing", p.isPlaying(), "the other is still held");
+    p.stopPlayback();
+    pull(none, 3);
+  }
+  {
+    // Sync on: the host's tempo is the grid, and the loop is rebuilt to it.
+    head.bpm = 140.0;
+    juce::MidiBuffer none;
+    pull(none, 3);
+    settle();
+    const double want = 16.0 * 4.0 * 60.0 / 140.0;
+    check("sync follows the host tempo",
+          std::abs(p.tempo() - 140.0) < 0.01 && std::abs(p.renderedSeconds() - want) < 0.05,
+          juce::String(p.tempo(), 1) + " bpm, " + juce::String(p.renderedSeconds(), 2) +
+              "s (want " + juce::String(want, 2) + ")");
+
+    // Sync off with the knob elsewhere: the knob wins, once. This used to
+    // re-render on every block, each one undoing what the last had set.
+    auto set = [&](const char* id, float value) {
+      auto* prm = p.params.getParameter(id);
+      prm->beginChangeGesture();
+      prm->setValueNotifyingHost(prm->convertTo0to1(value));
+      prm->endChangeGesture();
+    };
+    set("sync", 0.0f);
+    set("tempo", 100.0f);
+    p.invalidate();
+    pull(none, 3);
+    settle();
+    int rendersSeen = 0;
+    for (int i = 0; i < 40; ++i) {
+      pull(none, 4);
+      if (p.isRendering()) ++rendersSeen;
+      juce::Thread::sleep(10);
+    }
+    const double wantKnob = 16.0 * 4.0 * 60.0 / 100.0;
+    check("sync off uses the knob and stays put",
+          std::abs(p.tempo() - 100.0) < 0.01 && std::abs(p.renderedSeconds() - wantKnob) < 0.05 &&
+              rendersSeen == 0,
+          juce::String(p.tempo(), 1) + " bpm, " + juce::String(p.renderedSeconds(), 2) + "s, " +
+              juce::String(rendersSeen) + " re-renders in 400ms of host at 140");
+    set("sync", 1.0f);
+    head.bpm = 120.0;
+    head.rolling = false;
+    p.invalidate();
+    pull(none, 3);
+    settle();
+  }
+
+  // --- the rack's master switch in chop mode ------------------------------
+  {
+    auto set = [&](const char* id, float value) {
+      auto* prm = p.params.getParameter(id);
+      prm->beginChangeGesture();
+      prm->setValueNotifyingHost(prm->convertTo0to1(value));
+      prm->endChangeGesture();
+    };
+    set("verbon", 1.0f);
+    set("rackon", 1.0f);
+    p.invalidate(); settle();
+    const auto wet = fingerprint(p);
+    set("rackon", 0.0f);
+    p.invalidate(); settle();
+    const auto dry = fingerprint(p);
+    check("effects off leaves the chop dry", p.rackActive() && !p.rackOn() && wet != dry,
+          "verb on but the switch off changed the loop");
+    set("rackon", 1.0f);
+    p.invalidate(); settle();
+  }
+
+  // --- the session brings the sample back ---------------------------------
+  {
+    juce::MemoryBlock mb;
+    p.getStateInformation(mb);
+    HazenSamplerProcessor q;
+    q.setPlayConfigDetails(0, 2, 44100.0, 512);
+    q.prepareToPlay(44100.0, 512);
+    q.setStateInformation(mb.getData(), int(mb.getSize()));
+    for (int i = 0; i < 200 && (q.isRendering() || q.renderedSeconds() <= 0.0); ++i)
+      juce::Thread::sleep(25);
+    check("a reopened session has its sample",
+          q.hasSample() && q.sampleName() == p.sampleName() && q.renderedSeconds() > 0.0,
+          q.sampleName() + kDot + juce::String(q.renderedSeconds(), 2) + "s");
   }
 
   check("state round trips", [&] {

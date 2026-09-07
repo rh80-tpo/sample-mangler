@@ -59,8 +59,19 @@ PASS  rechop restarts from the beginning was at 0.00726, now 0.00018
 PASS  exports a wav                      4233704 bytes
 PASS  the export decodes back            32.000s, 24 bit
 PASS  the drag file is written           hazen_harness-chop-120bpm.wav
+PASS  the transport alone does not play it host rolling, no note: rms 0.00000
+PASS  a note plays it                    rms 0.06074 over 2.3s, playhead at 0.073
+PASS  note-off stops it                  rms 0.00000 after the ramp
+PASS  stop silences a held note          rms 0.00000
+PASS  sync follows the host tempo        140.0 bpm, 27.43s (want 27.43)
+PASS  sync off uses the knob and stays put 100.0 bpm, 38.40s, 0 re-renders in 400ms
+PASS  effects off leaves the chop dry    verb on but the switch off changed the loop
+PASS  a reopened session has its sample  video.mp4 · 32.00s
 PASS  state round trips                  saved and restored
 ```
+
+33 checks. The last eight came with the 0.19 interface pass and pin the
+transport, note, tempo and session behaviour that pass changed.
 
 ## Load it in Ableton
 
@@ -68,9 +79,13 @@ PASS  state round trips                  saved and restored
    **Rescan**.
 2. It appears in the browser under Plug-Ins → HAZEN → **HAZEN Sampler**, as an
    *instrument*, so drop it on a MIDI track.
-3. Drag an audio file onto the plugin window, or press `load a sample`.
-4. Press `play` to hear it. A MIDI note also triggers it, and with `sync` on it
-   follows the host transport, restarting on the bar.
+3. Drag an audio file onto the plugin window, or press `load`.
+4. Press `play` to hear it. A MIDI note plays it too, from the top, for as long
+   as the note is held. `sync` follows the host's tempo only: the transport does
+   not start the loop, and does not restart it on the bar. (It used to do both,
+   which meant a 16-bar chop never got past bar one while Live was running, and
+   `stop` did nothing while it was.)
+5. The file's path is saved with the set, so reopening it brings the sample back.
 
 ## Getting the audio onto a track
 

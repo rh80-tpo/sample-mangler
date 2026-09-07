@@ -15,6 +15,9 @@ const juce::Colour kHairlineStrong{0x3aede7dc};
 /// Written as bytes rather than as a literal: the source file's encoding is not
 /// something to bet the interface on, and the first build shipped "Â·".
 const juce::String kDot = juce::String::fromUTF8(" \xc2\xb7 ");
+const juce::String kPlayGlyph = juce::String::fromUTF8("\xe2\x96\xb6  play");  // ▶
+const juce::String kStopGlyph = juce::String::fromUTF8("\xe2\x96\xa0  stop");  // ■
+const juce::String kDragGlyph = juce::String::fromUTF8("\xe2\x87\xb1  drag to a track");  // ⇱
 
 /// Chop tints. Four, separated by lightness rather than hue, for the same reason
 /// the web build's are: a warm hue ramp at constant lightness collapses to one
@@ -26,6 +29,11 @@ const juce::Colour kTints[4] = {
     juce::Colour::fromHSL(48.0f / 360.0f, 0.82f, 0.82f, 1.0f),
 };
 
+/// One knob column. Every dial in the interface is this wide, so they are all
+/// the same size; the earlier build's rack knobs were two thirds the size of
+/// the sidechain's because each module divided its own box by its knob count.
+constexpr int kCell = 68;
+
 juce::Font mono(float size, bool bold = false) {
   return juce::Font{juce::FontOptions{juce::Font::getDefaultMonospacedFontName(), size,
                                       bold ? juce::Font::bold : juce::Font::plain}};
@@ -33,7 +41,7 @@ juce::Font mono(float size, bool bold = false) {
 
 /// Section chrome: a titled box. Returns the space left inside it.
 juce::Rectangle<int> panel(juce::Graphics& g, juce::Rectangle<int> area,
-                           const juce::String& title) {
+                           const juce::String& title, bool lit = true) {
   const auto r = area.toFloat();
   // A shallow vertical gradient and a single bright top edge. This is the whole
   // trick behind panels that look moulded rather than drawn: light appears to
@@ -41,41 +49,86 @@ juce::Rectangle<int> panel(juce::Graphics& g, juce::Rectangle<int> area,
   g.setGradientFill(juce::ColourGradient{kRaised.brighter(0.05f), r.getCentreX(), r.getY(),
                                          kRaised.darker(0.22f), r.getCentreX(), r.getBottom(),
                                          false});
-  g.fillRoundedRectangle(r, 3.0f);
+  g.fillRoundedRectangle(r, 4.0f);
   g.setColour(kInk.withAlpha(0.055f));
   g.drawLine(r.getX() + 3.0f, r.getY() + 0.5f, r.getRight() - 3.0f, r.getY() + 0.5f, 1.0f);
   g.setColour(kHairline);
-  g.drawRoundedRectangle(r.reduced(0.5f), 3.0f, 1.0f);
+  g.drawRoundedRectangle(r.reduced(0.5f), 4.0f, 1.0f);
   auto inner = area.reduced(10, 8);
   if (title.isNotEmpty()) {
-    g.setColour(kSignal);
-    g.setFont(mono(9.5f));
+    g.setColour(lit ? kSignal : kInkFaint);
+    g.setFont(mono(9.5f, true));
     g.drawText(title.toUpperCase(), inner.removeFromTop(12), juce::Justification::topLeft);
     inner.removeFromTop(2);
   }
   return inner;
 }
 
-/// The knob face. Thin arc, ink pointer, matching the web build's dial.
+/// The face: dials, switches, buttons and menus, all in the same hand.
 class KnobLook : public juce::LookAndFeel_V4 {
  public:
   KnobLook() {
     setColour(juce::Slider::textBoxTextColourId, kInk);
     setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     setColour(juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+    setColour(juce::Slider::textBoxHighlightColourId, kSignal.withAlpha(0.4f));
     setColour(juce::ComboBox::backgroundColourId, kSunken);
     setColour(juce::ComboBox::textColourId, kInk);
     setColour(juce::ComboBox::outlineColourId, kHairlineStrong);
     setColour(juce::ComboBox::arrowColourId, kSignal);
+    setColour(juce::ComboBox::focusedOutlineColourId, kSignal.withAlpha(0.6f));
     setColour(juce::PopupMenu::backgroundColourId, kRaised);
     setColour(juce::PopupMenu::textColourId, kInk);
     setColour(juce::PopupMenu::highlightedBackgroundColourId, kSignal);
     setColour(juce::PopupMenu::highlightedTextColourId, kGround);
     setColour(juce::TextButton::buttonColourId, kSunken);
+    setColour(juce::TextButton::buttonOnColourId, kSignal);
     setColour(juce::TextButton::textColourOffId, kInk);
+    setColour(juce::TextButton::textColourOnId, kGround);
     setColour(juce::ToggleButton::textColourId, kInkDim);
     setColour(juce::ToggleButton::tickColourId, kSignal);
     setColour(juce::ToggleButton::tickDisabledColourId, kHairlineStrong);
+    setColour(juce::TooltipWindow::backgroundColourId, kInk);
+    setColour(juce::TooltipWindow::textColourId, kGround);
+    setColour(juce::TooltipWindow::outlineColourId, juce::Colours::transparentBlack);
+    setColour(juce::Label::textWhenEditingColourId, kInk);
+    setColour(juce::TextEditor::highlightColourId, kSignal.withAlpha(0.4f));
+    setColour(juce::TextEditor::focusedOutlineColourId, kSignal);
+  }
+
+  // One typeface everywhere. The stock look set buttons and menus in the system
+  // sans, so half the face was in a different voice from the other half.
+  juce::Font getTextButtonFont(juce::TextButton&, int height) override {
+    return mono(juce::jmin(13.0f, height * 0.42f), true);
+  }
+  juce::Font getComboBoxFont(juce::ComboBox&) override { return mono(12.0f); }
+  juce::Font getPopupMenuFont() override { return mono(12.0f); }
+  juce::Font getLabelFont(juce::Label& l) override { return l.getFont(); }
+  juce::Font getSliderPopupFont(juce::Slider&) override { return mono(11.0f); }
+
+  static juce::TextLayout tipLayout(const juce::String& text) {
+    juce::AttributedString a;
+    a.setJustification(juce::Justification::centredLeft);
+    a.append(text, mono(11.0f), kGround);
+    juce::TextLayout layout;
+    layout.createLayoutWithBalancedLineLengths(a, 300.0f);
+    return layout;
+  }
+  juce::Rectangle<int> getTooltipBounds(const juce::String& text, juce::Point<int> pos,
+                                        juce::Rectangle<int> parent) override {
+    const juce::TextLayout layout = tipLayout(text);
+    const int w = int(layout.getWidth() + 16.0f), h = int(layout.getHeight() + 10.0f);
+    // Below the pointer and clamped to the window, so a tip on the bottom row
+    // does not vanish off the edge.
+    return juce::Rectangle<int>{pos.x > parent.getCentreX() ? pos.x - w : pos.x,
+                                pos.y + 18 + h > parent.getBottom() ? pos.y - h - 6 : pos.y + 18,
+                                w, h}
+        .constrainedWithin(parent);
+  }
+  void drawTooltip(juce::Graphics& g, const juce::String& text, int w, int h) override {
+    g.setColour(kInk);
+    g.fillRoundedRectangle(juce::Rectangle<float>{0.0f, 0.0f, float(w), float(h)}, 3.0f);
+    tipLayout(text).draw(g, juce::Rectangle<float>{8.0f, 5.0f, float(w) - 16.0f, float(h) - 10.0f});
   }
 
   void drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos,
@@ -106,10 +159,16 @@ class KnobLook : public juce::LookAndFeel_V4 {
     g.strokePath(track, juce::PathStrokeType{ring, juce::PathStrokeType::curved,
                                              juce::PathStrokeType::rounded});
 
-    if (pos > 0.002f) {
+    // Bipolar dials (pitch) fill from the centre, so zero reads as zero.
+    const bool bipolar = s.getMinimum() < 0.0 && s.getMaximum() > 0.0;
+    const float zero = bipolar ? startAngle + float((0.0 - s.getMinimum()) /
+                                                   (s.getMaximum() - s.getMinimum())) *
+                                                 (endAngle - startAngle)
+                               : startAngle;
+    if (std::abs(angle - zero) > 0.01f) {
       juce::Path fill;
-      fill.addCentredArc(centre.x, centre.y, radius - ring, radius - ring, 0.0f, startAngle,
-                         angle, true);
+      fill.addCentredArc(centre.x, centre.y, radius - ring, radius - ring, 0.0f,
+                         juce::jmin(zero, angle), juce::jmax(zero, angle), true);
       // A hint of glow under the arc, so the signal colour reads as emitted
       // rather than painted.
       g.setColour(kSignal.withAlpha(live ? 0.22f : 0.08f));
@@ -144,17 +203,82 @@ class KnobLook : public juce::LookAndFeel_V4 {
   void drawButtonBackground(juce::Graphics& g, juce::Button& b, const juce::Colour& colour,
                             bool hover, bool down) override {
     const auto r = b.getLocalBounds().toFloat().reduced(0.5f);
-    const auto base = colour.withMultipliedBrightness(down ? 0.86f : hover ? 1.12f : 1.0f);
-    g.setColour(juce::Colours::black.withAlpha(0.35f));
-    g.fillRoundedRectangle(r.translated(0.0f, 1.0f), 3.0f);
+    const bool live = b.isEnabled();
+    const auto base = colour.withMultipliedBrightness(down ? 0.86f : hover && live ? 1.12f : 1.0f)
+                          .withMultipliedAlpha(live ? 1.0f : 0.45f);
+    g.setColour(juce::Colours::black.withAlpha(live ? 0.35f : 0.15f));
+    g.fillRoundedRectangle(r.translated(0.0f, 1.0f), 4.0f);
     g.setGradientFill(juce::ColourGradient{base.brighter(0.10f), r.getCentreX(), r.getY(),
                                            base.darker(0.14f), r.getCentreX(), r.getBottom(),
                                            false});
-    g.fillRoundedRectangle(r, 3.0f);
-    g.setColour(kInk.withAlpha(0.14f));
-    g.drawRoundedRectangle(r, 3.0f, 1.0f);
+    g.fillRoundedRectangle(r, 4.0f);
+    // The signal-coloured buttons get a glow; it is what marks them as the
+    // thing to press.
+    if (colour == kSignal && live) {
+      g.setColour(kSignal.withAlpha(hover ? 0.35f : 0.18f));
+      g.drawRoundedRectangle(r.expanded(1.5f), 5.0f, 2.0f);
+    }
+    g.setColour(kInk.withAlpha(live ? 0.14f : 0.06f));
+    g.drawRoundedRectangle(r, 4.0f, 1.0f);
   }
 
+  void drawButtonText(juce::Graphics& g, juce::TextButton& b, bool, bool) override {
+    g.setFont(getTextButtonFont(b, b.getHeight()));
+    const auto colour = b.findColour(b.getToggleState() ? juce::TextButton::textColourOnId
+                                                        : juce::TextButton::textColourOffId);
+    g.setColour(colour.withMultipliedAlpha(b.isEnabled() ? 1.0f : 0.5f));
+    g.drawText(b.getButtonText(), b.getLocalBounds().reduced(4, 0), juce::Justification::centred,
+               false);
+  }
+
+  /// A switch is a lamp and a name. Click anywhere on the name. The stock tick
+  /// box was 16px wide and the word next to it did nothing.
+  void drawToggleButton(juce::Graphics& g, juce::ToggleButton& b, bool hover, bool) override {
+    const bool on = b.getToggleState();
+    const bool live = b.isEnabled();
+    auto r = b.getLocalBounds().toFloat();
+    const float d = 9.0f;
+    const auto lamp = juce::Rectangle<float>{d, d}.withCentre({r.getX() + 4.0f + d / 2.0f, r.getCentreY()});
+    if (on) {
+      g.setColour(kSignal.withAlpha(live ? 0.30f : 0.12f));
+      g.fillEllipse(lamp.expanded(3.0f));
+      g.setColour(live ? kSignal : kSignal.withAlpha(0.4f));
+      g.fillEllipse(lamp);
+      g.setColour(juce::Colours::white.withAlpha(0.35f));
+      g.fillEllipse(lamp.reduced(2.5f).translated(-0.5f, -0.8f));
+    } else {
+      g.setColour(kSunken);
+      g.fillEllipse(lamp);
+      g.setColour(kInk.withAlpha(hover && live ? 0.45f : 0.22f));
+      g.drawEllipse(lamp, 1.0f);
+    }
+    g.setFont(mono(9.5f, true));
+    g.setColour(on ? kInk : hover && live ? kInkDim.brighter(0.3f) : kInkDim);
+    if (!live) g.setColour(kInkFaint);
+    g.drawText(b.getButtonText().toUpperCase(), r.withTrimmedLeft(d + 12.0f).toNearestInt(),
+               juce::Justification::centredLeft, false);
+  }
+
+  void drawComboBox(juce::Graphics& g, int w, int h, bool, int, int, int, int,
+                    juce::ComboBox& box) override {
+    const auto r = juce::Rectangle<float>{0.0f, 0.0f, float(w), float(h)}.reduced(0.5f);
+    g.setColour(kSunken);
+    g.fillRoundedRectangle(r, 3.0f);
+    g.setColour(box.hasKeyboardFocus(true) ? kSignal.withAlpha(0.6f) : kHairlineStrong);
+    g.drawRoundedRectangle(r, 3.0f, 1.0f);
+    // Chevron, small. The stock arrow took a third of the box.
+    juce::Path chevron;
+    const float cx = float(w) - 12.0f, cy = float(h) * 0.5f;
+    chevron.startNewSubPath(cx - 4.0f, cy - 2.0f);
+    chevron.lineTo(cx, cy + 2.0f);
+    chevron.lineTo(cx + 4.0f, cy - 2.0f);
+    g.setColour(box.isEnabled() ? kSignal : kInkFaint);
+    g.strokePath(chevron, juce::PathStrokeType{1.5f});
+  }
+  void positionComboBoxText(juce::ComboBox& box, juce::Label& label) override {
+    label.setBounds(6, 1, box.getWidth() - 26, box.getHeight() - 2);
+    label.setFont(getComboBoxFont(box));
+  }
 };
 
 KnobLook& look() {
@@ -172,8 +296,7 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
   title.setColour(juce::Label::textColourId, kInk);
   addAndMakeVisible(title);
 
-  subtitle.setText("midi note triggers" + kDot + "sync follows the host",
-                   juce::dontSendNotification);
+  subtitle.setText("a midi note plays it" + kDot + "drop a file anywhere", juce::dontSendNotification);
   subtitle.setFont(mono(9.5f));
   subtitle.setColour(juce::Label::textColourId, kInkFaint);
   addAndMakeVisible(subtitle);
@@ -183,39 +306,18 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
   statusLabel.setJustificationType(juce::Justification::centredRight);
   addAndMakeVisible(statusLabel);
 
-  hint.setFont(mono(9.5f));
-  hint.setColour(juce::Label::textColourId, kInkFaint);
-  addAndMakeVisible(hint);
+  gridLabel.setFont(mono(9.5f));
+  gridLabel.setColour(juce::Label::textColourId, kInkFaint);
+  gridLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(gridLabel);
 
-  rollLabel.setFont(mono(9.5f));
+  rollLabel.setFont(mono(10.0f));
   rollLabel.setColour(juce::Label::textColourId, kInkDim);
   rollLabel.setJustificationType(juce::Justification::centred);
   addAndMakeVisible(rollLabel);
 
-  // Transport. Playing should not require a MIDI note or a rolling host — the
-  // first thing you want after loading a sample is to hear it.
-  playButton.setColour(juce::TextButton::buttonColourId, kSunken);
-  stopButton.setColour(juce::TextButton::buttonColourId, kSunken);
-  exportButton.setColour(juce::TextButton::buttonColourId, kSunken);
-  for (auto* b : {&playButton, &stopButton, &exportButton}) addAndMakeVisible(b);
-  playButton.onClick = [this] { processor.startPlayback(); };
-  stopButton.onClick = [this] { processor.stopPlayback(); };
-  exportButton.onClick = [this] {
-    chooser = std::make_unique<juce::FileChooser>(
-        "Export the loop", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
-                               .getChildFile(processor.exportName() + ".wav"),
-        "*.wav");
-    chooser->launchAsync(juce::FileBrowserComponent::saveMode |
-                             juce::FileBrowserComponent::canSelectFiles |
-                             juce::FileBrowserComponent::warnAboutOverwriting,
-                         [this](const juce::FileChooser& fc) {
-                           const auto file = fc.getResult();
-                           if (file != juce::File{}) processor.exportTo(file);
-                         });
-  };
-
-  addAndMakeVisible(dragOut);
-  addAndMakeVisible(loadButton);
+  // --- the deck: the five things you do, in the order you do them ---------
+  styleAction(loadButton, false, "Open a file. Dropping one anywhere on this window works too.");
   loadButton.onClick = [this] {
     chooser = std::make_unique<juce::FileChooser>(
         "Load a sample", juce::File{},
@@ -232,96 +334,151 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
                          });
   };
 
-  rerollButton.setColour(juce::TextButton::buttonColourId, kSignal);
-  rerollButton.setColour(juce::TextButton::textColourOffId, kGround);
-  addAndMakeVisible(rerollButton);
+  // One button, two states. Play and stop as separate buttons meant one of them
+  // was always greyed out, and which one was the thing you had to work out.
+  styleAction(playButton, false,
+              "Play the loop from the top. A MIDI note does the same, and stops on note-off.");
+  playButton.onClick = [this] {
+    if (processor.isPlaying()) processor.stopPlayback();
+    else processor.startPlayback();
+  };
+
+  // Mode as two tabs rather than a menu: one click, and both options stay in
+  // view so you can see there is another one.
+  for (auto* t : {&mangleTab, &chopTab}) {
+    t->setClickingTogglesState(true);
+    t->setRadioGroupId(1001);
+    addAndMakeVisible(t);
+  }
+  mangleTab.setTooltip("Run the whole sample through the rack and fit it to a bar count.");
+  chopTab.setTooltip("Cut it into a rhythm on the grid, then run the rack over each phrase.");
+  mangleTab.onClick = [this] { setMode(0); };
+  chopTab.onClick = [this] { setMode(1); };
+
+  styleAction(rerollButton, true, "Roll a new random rack. The arrows step back through earlier rolls.");
   rerollButton.onClick = [this] { processor.reroll(); };
 
   // The chopper's own two actions. Without a rechop the rhythm was seeded and
   // every chop of a given setup came out identical, with no way to ask for
   // another take.
-  rechopButton.setColour(juce::TextButton::buttonColourId, kSunken);
-  chopMangleButton.setColour(juce::TextButton::buttonColourId, kSignal);
-  chopMangleButton.setColour(juce::TextButton::textColourOffId, kGround);
-  addAndMakeVisible(rechopButton);
-  addAndMakeVisible(chopMangleButton);
+  styleAction(rechopButton, false, "A new performance of the same settings.");
+  styleAction(chopMangleButton, true, "A new chop and a new random rack, in one press.");
   rechopButton.onClick = [this] { processor.rechop(); };
   chopMangleButton.onClick = [this] { processor.chopAndMangle(); };
 
-  for (auto* b : {&rollBack, &rollForward}) addAndMakeVisible(b);
+  for (auto* b : {&rollBack, &rollForward}) {
+    styleAction(*b, false, {});
+    b->setConnectedEdges(juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+  }
+  rollBack.setTooltip("Back to the previous roll.");
+  rollForward.setTooltip("Forward to the next roll.");
   rollBack.onClick = [this] { processor.stepRoll(-1); };
   rollForward.onClick = [this] { processor.stepRoll(1); };
 
-  addChoice(mode, "mode", "mode", {"mangle", "chop"});
-  addChoice(bars, "bars", "bars", {"1", "2", "4", "8", "16"});
-  addChoice(pattern, "pattern", "pattern", {"AAAB", "ABAB", "AABA", "ABAC", "AAAA", "ABCB"});
-  addChoice(length, "length", "length", {"4 bars", "8 bars", "16 bars"});
-  addChoice(cut, "cut", "cut", {"transients", "1/1", "1/2", "1/4", "1/8", "1/16"});
-  addChoice(res, "res", "grid", {"1/8", "1/16"});
-  addChoice(duckRate, "duckrate", "kick", {"1/1", "1/2", "1/4", "1/8"});
-  mode.box.onChange = [this] {
-    applyMode();
-    resized();
-    repaint();
-    processor.invalidate();
+  styleAction(exportButton, false, "Save the loop as a 24-bit WAV.");
+  exportButton.onClick = [this] {
+    chooser = std::make_unique<juce::FileChooser>(
+        "Export the loop", juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                               .getChildFile(processor.exportName() + ".wav"),
+        "*.wav");
+    chooser->launchAsync(juce::FileBrowserComponent::saveMode |
+                             juce::FileBrowserComponent::canSelectFiles |
+                             juce::FileBrowserComponent::warnAboutOverwriting,
+                         [this](const juce::FileChooser& fc) {
+                           const auto file = fc.getResult();
+                           if (file != juce::File{}) processor.exportTo(file);
+                         });
   };
+  dragOut.setTooltip("Drag this onto an audio track. It lands there as a WAV.");
+  addAndMakeVisible(dragOut);
 
-  addSwitch(sync, "sync", "sync");
-  addSwitch(reverseOn, "revon", "on");
-  addSwitch(chopOn, "chopon", "on");
-  addSwitch(crushOn, "crushon", "on");
-  addSwitch(pitchOn, "pitchon", "on");
-  addSwitch(driveOn, "driveon", "on");
-  addSwitch(verbOn, "verbon", "on");
+  // --- settings --------------------------------------------------------
+  addChoice(bars, "bars", "bars", {"1", "2", "4", "8", "16"}, "How long the loop comes out.");
+  addChoice(pattern, "pattern", "pattern", {"AAAB", "ABAB", "AABA", "ABAC", "AAAA", "ABCB"},
+            "How the phrases are arranged. Each letter is one phrase.");
+  addChoice(length, "length", "length", {"4 bars", "8 bars", "16 bars"}, "Total length of the loop.");
+  addChoice(cut, "cut", "cut", {"transients", "1/1", "1/2", "1/4", "1/8", "1/16"},
+            "Where the slices are cut: on the sound's own transients, or on a note grid.");
+  addChoice(res, "res", "grid", {"1/8", "1/16"}, "The rhythmic grid the slices are placed on.");
+  addChoice(duckRate, "duckrate", "kick", {"1/1", "1/2", "1/4", "1/8"}, "How often the kick hits.");
 
-  addKnob(tempo, "tempo", "bpm", Unit::Integer);
-  addKnob(segments, "segments", "slices", Unit::Integer);
-  addKnob(scatter, "scatter", "scatter", Unit::Percent);
-  addKnob(stutter, "stutter", "stutter", Unit::Percent);
-  addKnob(gate, "gate", "gate", Unit::Percent);
-  addKnob(bits, "bits", "bits", Unit::Integer);
-  addKnob(divisor, "divisor", "rate", Unit::Integer);
-  addKnob(semitones, "semitones", "pitch", Unit::Semitones);
-  addKnob(grain, "grain", "grain", Unit::Millis);
-  addKnob(drive, "drive", "drive", Unit::Percent);
-  addKnob(verbSize, "verbsize", "size", Unit::Percent);
-  addKnob(verbDamp, "verbdamp", "damp", Unit::Hertz);
-  addKnob(verbMix, "verbmix", "mix", Unit::Percent);
-  addKnob(density, "density", "density", Unit::Percent);
-  addKnob(variation, "variation", "variation", Unit::Percent);
-  addKnob(hold, "hold", "hold", Unit::Percent);
-  addKnob(duck, "duck", "duck", Unit::Percent);
-  addKnob(duckRelease, "duckrel", "release", Unit::Percent);
-  addKnob(level, "level", "level", Unit::Decibels);
+  addSwitch(sync, "sync", "sync", "Follow the host's tempo. Off, the bpm knob is the grid.");
+  addSwitch(rackOn, "rackon", "effects", "Run the rack over the chop. Off, you hear the chop dry.");
+  addSwitch(reverseOn, "revon", "01 reverse", "Play it backwards.");
+  addSwitch(chopOn, "chopon", "02 chop", "Slice it up and shuffle the pieces.");
+  addSwitch(pitchOn, "pitchon", "03 pitch", "Shift the pitch without changing the length.");
+  addSwitch(crushOn, "crushon", "04 crush", "Fewer bits, lower rate.");
+  addSwitch(driveOn, "driveon", "05 drive", "Saturate it.");
+  addSwitch(verbOn, "verbon", "06 verb", "Reverb.");
+
+  addKnob(tempo, "tempo", "bpm", Unit::Integer, "The grid, when sync is off.");
+  addKnob(segments, "segments", "slices", Unit::Integer, "How many pieces to cut it into.");
+  addKnob(scatter, "scatter", "scatter", Unit::Percent, "How far the pieces move from where they were.");
+  addKnob(stutter, "stutter", "stutter", Unit::Percent, "How often a piece repeats.");
+  addKnob(gate, "gate", "gate", Unit::Percent, "How many pieces are dropped to silence.");
+  addKnob(bits, "bits", "bits", Unit::Integer, "Bit depth.");
+  addKnob(divisor, "divisor", "rate", Unit::Integer, "Sample-rate divider.");
+  addKnob(semitones, "semitones", "pitch", Unit::Semitones, "Semitones up or down.");
+  addKnob(grain, "grain", "grain", Unit::Millis, "Grain size. Small is smoother, large is more metallic.");
+  addKnob(drive, "drive", "drive", Unit::Percent, "How hard.");
+  addKnob(verbSize, "verbsize", "size", Unit::Percent, "Room size.");
+  addKnob(verbDamp, "verbdamp", "damp", Unit::Hertz, "Where the highs roll off in the tail.");
+  addKnob(verbMix, "verbmix", "mix", Unit::Percent, "Dry to wet.");
+  addKnob(density, "density", "density", Unit::Percent, "How much of the grid gets a hit.");
+  addKnob(variation, "variation", "variation", Unit::Percent, "How different the phrases are from each other.");
+  addKnob(hold, "hold", "hold", Unit::Percent, "How far a slice rings past its own slot.");
+  addKnob(duck, "duck", "duck", Unit::Percent, "Sidechain to a kick. Zero is off.");
+  addKnob(duckRelease, "duckrel", "release", Unit::Percent, "How fast it comes back up after each kick.");
+  addKnob(level, "level", "level", Unit::Decibels, "Output level.");
 
   // The rack, as modules. Order matches the chain the processor runs.
-  mangleModules = {
-      {"01 reverse", &reverseOn, {}, {}},
-      {"02 chop", &chopOn, {&segments, &scatter, &stutter, &gate}, {}},
-      {"03 pitch", &pitchOn, {&semitones, &grain}, {}},
-      {"04 crush", &crushOn, {&bits, &divisor}, {}},
-      {"05 drive", &driveOn, {&drive}, {}},
-      {"06 verb", &verbOn, {&verbSize, &verbDamp, &verbMix}, {}},
+  modules = {
+      {&reverseOn, {}, {}},
+      {&chopOn, {&segments, &scatter, &stutter, &gate}, {}},
+      {&pitchOn, {&semitones, &grain}, {}},
+      {&crushOn, {&bits, &divisor}, {}},
+      {&driveOn, {&drive}, {}},
+      {&verbOn, {&verbSize, &verbDamp, &verbMix}, {}},
   };
 
   applyMode();
-  // Tall enough for the sections to actually fit. They summed to ~790 in a 700
-  // window before, so sidechain and out were laid out past the bottom edge and
-  // their knobs simply were not there.
-  setSize(920, 792);
+  // Fits a laptop. The earlier 920 by 792 was taller than the space Live gives
+  // a plugin window on a 13-inch screen, and the bottom row was the one that
+  // got cut off.
+  setSize(960, 596);
   startTimerHz(20);
 }
 
 HazenSamplerEditor::~HazenSamplerEditor() { setLookAndFeel(nullptr); }
 
-bool HazenSamplerEditor::chopMode() const { return mode.box.getSelectedItemIndex() == 1; }
+bool HazenSamplerEditor::chopMode() const {
+  return juce::roundToInt(processor.params.getRawParameterValue("mode")->load()) == 1;
+}
+
+void HazenSamplerEditor::setMode(int index) {
+  if (auto* prm = processor.params.getParameter("mode")) {
+    prm->beginChangeGesture();
+    prm->setValueNotifyingHost(prm->convertTo0to1(float(index)));
+    prm->endChangeGesture();
+  }
+  applyMode();
+  processor.invalidate();
+}
+
+void HazenSamplerEditor::styleAction(juce::TextButton& b, bool primary, const juce::String& tip) {
+  b.setColour(juce::TextButton::buttonColourId, primary ? kSignal : kSunken);
+  b.setColour(juce::TextButton::textColourOffId, primary ? kGround : kInk);
+  if (tip.isNotEmpty()) b.setTooltip(tip);
+  addAndMakeVisible(b);
+}
 
 void HazenSamplerEditor::addKnob(Knob& k, const juce::String& id, const juce::String& caption,
-                                 Unit unit) {
+                                 Unit unit, const juce::String& tip) {
   k.slider.setName(caption);
   k.slider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
-  k.slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 58, 13);
+  k.slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 14);
   k.slider.setColour(juce::Slider::textBoxTextColourId, kInk);
+  k.slider.setTooltip(tip);
   k.slider.onValueChange = [this] { processor.invalidate(); };
   addAndMakeVisible(k.slider);
 
@@ -332,6 +489,12 @@ void HazenSamplerEditor::addKnob(Knob& k, const juce::String& id, const juce::St
   addAndMakeVisible(k.caption);
 
   k.attach = std::make_unique<SliderAttach>(processor.params, id, k.slider);
+
+  // Double-click puts a dial back where it started. Every plugin does this and
+  // hands expect it; without it the only way back to "pitch 0" was typing it.
+  if (auto* prm = processor.params.getParameter(id)) {
+    k.slider.setDoubleClickReturnValue(true, prm->convertFrom0to1(prm->getDefaultValue()));
+  }
 
   // After the attachment, deliberately. SliderAttachment installs the
   // parameter's own text conversion, so assigning these first meant the first
@@ -350,28 +513,40 @@ void HazenSamplerEditor::addKnob(Knob& k, const juce::String& id, const juce::St
     }
     return juce::String(v);
   };
-  k.slider.valueFromTextFunction = [](const juce::String& t) { return t.getDoubleValue(); };
+  k.slider.valueFromTextFunction = [unit](const juce::String& t) {
+    const double v = t.retainCharacters("0123456789.-+").getDoubleValue();
+    switch (unit) {
+      case Unit::Percent: return v / 100.0;
+      case Unit::Millis: return v / 1000.0;
+      case Unit::Hertz: return t.containsIgnoreCase("k") ? v * 1000.0 : v;
+      case Unit::Integer:
+      case Unit::Semitones:
+      case Unit::Decibels: return v;
+    }
+    return v;
+  };
   k.slider.updateText();
 }
 
-void HazenSamplerEditor::addSwitch(Switch& s, const juce::String& id,
-                                   const juce::String& text) {
+void HazenSamplerEditor::addSwitch(Switch& s, const juce::String& id, const juce::String& text,
+                                   const juce::String& tip) {
   s.button.setButtonText(text);
+  s.button.setTooltip(tip);
   s.button.onClick = [this] { processor.invalidate(); };
   addAndMakeVisible(s.button);
   s.attach = std::make_unique<ButtonAttach>(processor.params, id, s.button);
 }
 
-void HazenSamplerEditor::addChoice(Choice& c, const juce::String& id,
-                                   const juce::String& caption,
-                                   const juce::StringArray& options) {
+void HazenSamplerEditor::addChoice(Choice& c, const juce::String& id, const juce::String& caption,
+                                   const juce::StringArray& options, const juce::String& tip) {
   c.box.addItemList(options, 1);
+  c.box.setTooltip(tip);
   c.box.onChange = [this] { processor.invalidate(); };
   addAndMakeVisible(c.box);
 
   c.caption.setText(caption, juce::dontSendNotification);
   c.caption.setFont(mono(9.0f));
-  c.caption.setColour(juce::Label::textColourId, kSignal);
+  c.caption.setColour(juce::Label::textColourId, kInkFaint);
   addAndMakeVisible(c.caption);
 
   c.attach = std::make_unique<ComboAttach>(processor.params, id, c.box);
@@ -379,27 +554,23 @@ void HazenSamplerEditor::addChoice(Choice& c, const juce::String& id,
 
 void HazenSamplerEditor::applyMode() {
   const bool chop = chopMode();
+  shownMode = chop ? 1 : 0;
+  mangleTab.setToggleState(!chop, juce::dontSendNotification);
+  chopTab.setToggleState(chop, juce::dontSendNotification);
 
   // Mangle-only.
-  for (auto* c : {&bars}) {
-    c->box.setVisible(!chop);
-    c->caption.setVisible(!chop);
-  }
+  bars.box.setVisible(!chop);
+  bars.caption.setVisible(!chop);
   rerollButton.setVisible(!chop);
   rollBack.setVisible(!chop);
   rollForward.setVisible(!chop);
   rollLabel.setVisible(!chop);
+
+  // Chop-only. The rack itself stays: it runs in both modes, so it is shown in
+  // both, with a master switch in chop mode.
   rechopButton.setVisible(chop);
   chopMangleButton.setVisible(chop);
-  for (auto& m : mangleModules) {
-    if (m.power) m.power->button.setVisible(!chop);
-    for (auto* k : m.knobs) {
-      k->slider.setVisible(!chop);
-      k->caption.setVisible(!chop);
-    }
-  }
-
-  // Chop-only.
+  rackOn.button.setVisible(chop);
   for (auto* c : {&pattern, &length, &cut, &res}) {
     c->box.setVisible(chop);
     c->caption.setVisible(chop);
@@ -408,9 +579,15 @@ void HazenSamplerEditor::applyMode() {
     k->slider.setVisible(chop);
     k->caption.setVisible(chop);
   }
+  resized();
+  repaint();
 }
 
 void HazenSamplerEditor::timerCallback() {
+  // The mode can change from outside: a preset, host automation, the roll
+  // history. Re-apply the layout when it has.
+  if ((chopMode() ? 1 : 0) != shownMode) applyMode();
+
   wave = processor.peaks(juce::jmax(1, waveArea.getWidth() - 2));
   core = processor.rms(juce::jmax(1, waveArea.getWidth() - 2));
   voiceAt = processor.voiceStarts();
@@ -423,24 +600,40 @@ void HazenSamplerEditor::timerCallback() {
     text += kDot + juce::String(processor.renderedSeconds(), 2) + "s";
   statusLabel.setText(text, juce::dontSendNotification);
 
-  hint.setText(sync.button.getToggleState()
-                   ? "grid: host tempo" + kDot + juce::String(processor.tempo(), 1) + " bpm"
-                   : "grid: " + juce::String(processor.tempo(), 1) + " bpm",
-               juce::dontSendNotification);
-  tempo.slider.setEnabled(!sync.button.getToggleState());
+  const bool synced = sync.button.getToggleState();
+  gridLabel.setText((synced ? "host" + kDot : juce::String{}) +
+                        juce::String(juce::roundToInt(processor.tempo())) + " bpm",
+                    juce::dontSendNotification);
+  tempo.slider.setEnabled(!synced);
 
   const int count = processor.rollCount();
-  rollLabel.setText(count > 0 ? juce::String(processor.rollIndex() + 1) + "/" +
-                                    juce::String(count)
-                              : "-",
+  rollLabel.setText(count > 0 ? juce::String(processor.rollIndex() + 1) + "/" + juce::String(count)
+                              : juce::String("0/0"),
                     juce::dontSendNotification);
   rollBack.setEnabled(processor.rollIndex() > 0);
   rollForward.setEnabled(count > 0 && processor.rollIndex() < count - 1);
 
-  playButton.setEnabled(processor.renderedSeconds() > 0.0 && !processor.isPlaying());
-  stopButton.setEnabled(processor.isPlaying());
-  exportButton.setEnabled(processor.renderedSeconds() > 0.0);
+  const bool ready = processor.renderedSeconds() > 0.0;
+  const bool playing = processor.isPlaying();
+  // Until something is loaded, load is the only move, so it is the lit one.
+  const bool empty = !processor.hasSample();
+  loadButton.setColour(juce::TextButton::buttonColourId, empty ? kSignal : kSunken);
+  loadButton.setColour(juce::TextButton::textColourOffId, empty ? kGround : kInk);
+  playButton.setEnabled(ready);
+  playButton.setButtonText(playing ? kStopGlyph : kPlayGlyph);
+  playButton.setColour(juce::TextButton::buttonColourId, playing ? kSignal : kSunken);
+  playButton.setColour(juce::TextButton::textColourOffId, playing ? kGround : kInk);
+  exportButton.setEnabled(ready);
+  rerollButton.setEnabled(processor.hasSample());
+  rechopButton.setEnabled(processor.hasSample());
+  chopMangleButton.setEnabled(processor.hasSample());
   dragOut.repaint();
+
+  // In chop mode with the rack off, the modules are still there to set up, but
+  // they read as dormant.
+  const bool rackLive = !chopMode() || rackOn.button.getToggleState();
+  for (auto& m : modules)
+    for (auto* k : m.knobs) k->slider.setEnabled(rackLive);
 
   repaint(waveArea);
 }
@@ -452,7 +645,7 @@ void HazenSamplerEditor::paint(juce::Graphics& g) {
 
   g.setColour(kSignal);
   g.setFont(mono(17.0f, true));
-  g.drawText("HAZEN", 16, 14, 76, 22, juce::Justification::left);
+  g.drawText("HAZEN", 16, 12, 76, 22, juce::Justification::left);
 
   // --- waveform -------------------------------------------------------
   {
@@ -461,18 +654,26 @@ void HazenSamplerEditor::paint(juce::Graphics& g) {
     // waveform should look inset into the face rather than sitting on it.
     g.setGradientFill(juce::ColourGradient{kSunken.darker(0.5f), r.getCentreX(), r.getY(),
                                            kSunken, r.getCentreX(), r.getBottom(), false});
-    g.fillRoundedRectangle(r, 3.0f);
+    g.fillRoundedRectangle(r, 4.0f);
     g.setColour(juce::Colours::black.withAlpha(0.55f));
     g.drawLine(r.getX() + 3.0f, r.getY() + 0.5f, r.getRight() - 3.0f, r.getY() + 0.5f, 1.0f);
     g.setColour(kHairline);
-    g.drawRoundedRectangle(r.reduced(0.5f), 3.0f, 1.0f);
+    g.drawRoundedRectangle(r.reduced(0.5f), 4.0f, 1.0f);
   }
 
   if (wave.empty()) {
-    g.setColour(kInkFaint);
-    g.setFont(mono(11.0f));
-    g.drawText(processor.hasSample() ? "rendering" : "drop a sample here, or load one",
-               waveArea, juce::Justification::centred);
+    g.setColour(processor.hasSample() ? kInkDim : kInkFaint);
+    g.setFont(mono(12.0f, true));
+    auto text = waveArea;
+    if (processor.hasSample()) {
+      g.drawText("rendering", text, juce::Justification::centred);
+    } else {
+      g.drawText("drop audio or video here", text.removeFromTop(waveArea.getHeight() / 2 + 8),
+                 juce::Justification::centredBottom);
+      g.setFont(mono(10.0f));
+      g.drawText("or press load" + kDot + "an mp4 gives up its audio track", text.withTrimmedTop(4),
+                 juce::Justification::centredTop);
+    }
   } else {
     const auto inner = waveArea.reduced(1);
     const float mid = float(inner.getCentreY());
@@ -532,182 +733,198 @@ void HazenSamplerEditor::paint(juce::Graphics& g) {
     }
   }
 
-  // --- section chrome -------------------------------------------------
-  panel(g, sourceArea, "source");
-  panel(g, transportArea, "tempo");
-  if (chopMode()) {
-    panel(g, chopArea, "shape");
-    panel(g, feelArea, "feel");
-  } else {
-    // Each module gets its own box, which is what makes a rack read as a rack.
-    for (const auto& m : mangleModules) {
-      if (m.bounds.isEmpty()) continue;
-      g.setColour(kRaised);
-      g.fillRect(m.bounds);
-      g.setColour(kHairline);
-      g.drawRect(m.bounds, 1);
-      const bool on = m.power && m.power->button.getToggleState();
-      g.setColour(on ? kSignal : kInkFaint);
-      g.setFont(mono(9.0f));
-      g.drawText(m.title.toUpperCase(), m.bounds.reduced(8, 6).removeFromTop(11),
-                 juce::Justification::topLeft);
-    }
+  // A file over the window: say where it will land.
+  if (dropping) {
+    const auto r = waveArea.toFloat().reduced(2.0f);
+    g.setColour(kSignal.withAlpha(0.10f));
+    g.fillRoundedRectangle(r, 4.0f);
+    juce::Path border, dashed;
+    border.addRoundedRectangle(r, 4.0f);
+    const float dashes[] = {6.0f, 4.0f};
+    juce::PathStrokeType{1.5f}.createDashedStroke(dashed, border, dashes, 2);
+    g.setColour(kSignal);
+    g.fillPath(dashed);
+    g.setFont(mono(12.0f, true));
+    g.drawText("drop to load", waveArea, juce::Justification::centred);
   }
+
+  // --- the deck ----------------------------------------------------------
+  panel(g, deckArea, {});
+  {
+    // Hairline dividers between the groups, so the row reads as
+    // load/play | mode | roll | out rather than nine buttons.
+    g.setColour(kHairlineStrong);
+    const int y0 = deckArea.getY() + 10, y1 = deckArea.getBottom() - 10;
+    const int afterPlay = playButton.getRight() + 14;
+    const int afterMode = chopTab.getRight() + 14;
+    g.drawVerticalLine(afterPlay, float(y0), float(y1));
+    g.drawVerticalLine(afterMode, float(y0), float(y1));
+    g.drawVerticalLine(exportButton.getX() - 14, float(y0), float(y1));
+  }
+
+  // --- settings ----------------------------------------------------------
+  panel(g, settingsArea, chopMode() ? "chop" : "grid");
+
+  // --- rack ----------------------------------------------------------------
+  const bool chop = chopMode();
+  const bool rackLive = !chop || rackOn.button.getToggleState();
+  g.setColour(rackLive ? kSignal : kInkFaint);
+  g.setFont(mono(9.5f, true));
+  g.drawText(chop ? "RACK" + kDot + "OVER EACH PHRASE" : "RACK", rackTitle, juce::Justification::centredLeft);
+  for (const auto& m : modules) {
+    if (m.bounds.isEmpty()) continue;
+    const bool on = m.power && m.power->button.getToggleState();
+    const auto r = m.bounds.toFloat();
+    g.setGradientFill(juce::ColourGradient{kRaised.brighter(on && rackLive ? 0.08f : 0.03f),
+                                           r.getCentreX(), r.getY(), kRaised.darker(0.22f),
+                                           r.getCentreX(), r.getBottom(), false});
+    g.fillRoundedRectangle(r, 4.0f);
+    g.setColour(on && rackLive ? kSignal.withAlpha(0.35f) : kHairline);
+    g.drawRoundedRectangle(r.reduced(0.5f), 4.0f, 1.0f);
+  }
+
   panel(g, sideArea, "sidechain");
   panel(g, outArea, "out");
 }
 
-void HazenSamplerEditor::placeKnobs(juce::Rectangle<int> area,
-                                    const std::vector<Knob*>& knobs) {
-  if (knobs.empty()) return;
-  // A fixed cell, not the area divided by the count. Dividing made a two-knob
-  // module give each dial 190px of width and 40 of height, which draws a squat
-  // oval; knobs should be the same size everywhere and left-aligned in their box.
-  const int cell = 72;
+void HazenSamplerEditor::placeKnobs(juce::Rectangle<int> area, const std::vector<Knob*>& knobs) {
   for (auto* k : knobs) {
-    auto slot = area.removeFromLeft(cell).reduced(2, 0);
+    auto slot = area.removeFromLeft(kCell);
     // Caption below the dial's own value box, so nothing overlaps.
     k->caption.setBounds(slot.removeFromBottom(11));
     k->slider.setBounds(slot);
   }
 }
 
+void HazenSamplerEditor::placeChoice(juce::Rectangle<int> cell, Choice& c) {
+  c.caption.setBounds(cell.removeFromTop(11));
+  cell.removeFromTop(2);
+  c.box.setBounds(cell.removeFromTop(24));
+}
+
 void HazenSamplerEditor::resized() {
   auto area = getLocalBounds().reduced(14);
 
-  auto head = area.removeFromTop(34);
+  auto head = area.removeFromTop(26);
   title.setBounds(head.removeFromLeft(190).withTrimmedLeft(76));
-  statusLabel.setBounds(head.removeFromRight(360));
+  statusLabel.setBounds(head.removeFromRight(440));
   subtitle.setBounds(head);
 
   area.removeFromTop(6);
-  waveArea = area.removeFromTop(128);
+  waveArea = area.removeFromTop(104);
   area.removeFromTop(8);
 
-  // source: load, drop hint, mode
-  sourceArea = area.removeFromTop(58);
+  // The deck. Left to right is the order of use.
+  deckArea = area.removeFromTop(48);
   {
-    auto inner = sourceArea.reduced(10, 8);
-    inner.removeFromTop(14);
-    loadButton.setBounds(inner.removeFromLeft(140).reduced(0, 2));
-    inner.removeFromLeft(10);
-    auto modeCell = inner.removeFromLeft(110);
-    mode.caption.setBounds(modeCell.removeFromTop(10));
-    mode.box.setBounds(modeCell.reduced(0, 1));
-    inner.removeFromLeft(12);
-    playButton.setBounds(inner.removeFromLeft(64).withSizeKeepingCentre(64, 26));
-    inner.removeFromLeft(4);
-    stopButton.setBounds(inner.removeFromLeft(64).withSizeKeepingCentre(64, 26));
-    inner.removeFromLeft(12);
-    // Export sits next to the drag handle: same job, one for each habit.
-    dragOut.setBounds(inner.removeFromRight(132).withSizeKeepingCentre(132, 28));
-    inner.removeFromRight(6);
-    exportButton.setBounds(inner.removeFromRight(96).withSizeKeepingCentre(96, 26));
-    inner.removeFromRight(12);
-    hint.setBounds(inner);
-  }
-  area.removeFromTop(6);
+    auto row = deckArea.reduced(10, 8);
+    loadButton.setBounds(row.removeFromLeft(80));
+    row.removeFromLeft(6);
+    playButton.setBounds(row.removeFromLeft(104));
+    row.removeFromLeft(28);
+    mangleTab.setBounds(row.removeFromLeft(74));
+    row.removeFromLeft(2);
+    chopTab.setBounds(row.removeFromLeft(74));
+    row.removeFromLeft(28);
 
-  // mangle/chop header row: tempo, sync, bars or nothing, reroll
-  transportArea = area.removeFromTop(96);
-  {
-    auto inner = transportArea.reduced(10, 8);
-    inner.removeFromTop(14);
-    placeKnobs(inner.removeFromLeft(72), {&tempo});
-    inner.removeFromLeft(8);
-    sync.button.setBounds(inner.removeFromLeft(76).withSizeKeepingCentre(76, 22));
-    inner.removeFromLeft(12);
+    // Export sits next to the drag handle: same job, one for each habit.
+    dragOut.setBounds(row.removeFromRight(160));
+    row.removeFromRight(6);
+    exportButton.setBounds(row.removeFromRight(100));
+    row.removeFromRight(28);
 
     if (chopMode()) {
-      auto actions = inner.removeFromRight(300);
-      chopMangleButton.setBounds(actions.removeFromRight(160).withSizeKeepingCentre(160, 28));
-      actions.removeFromRight(8);
-      rechopButton.setBounds(actions.removeFromRight(104).withSizeKeepingCentre(104, 28));
-    }
-
-    if (!chopMode()) {
-      auto barsCell = inner.removeFromLeft(80);
-      bars.caption.setBounds(barsCell.removeFromTop(10));
-      bars.box.setBounds(barsCell.removeFromTop(24));
-      inner.removeFromLeft(12);
-      // Roll history sits with reroll, since it is what reroll makes recoverable.
-      auto rollCell = inner.removeFromRight(200);
-      rerollButton.setBounds(rollCell.removeFromLeft(96).withSizeKeepingCentre(96, 26));
-      rollBack.setBounds(rollCell.removeFromLeft(28).withSizeKeepingCentre(28, 24));
-      rollLabel.setBounds(rollCell.removeFromLeft(42));
-      rollForward.setBounds(rollCell.removeFromLeft(28).withSizeKeepingCentre(28, 24));
-    }
-  }
-  area.removeFromTop(6);
-
-  if (chopMode()) {
-    chopArea = area.removeFromTop(60);
-    {
-      auto inner = chopArea.reduced(10, 8);
-      inner.removeFromTop(14);
-      for (auto* c : {&pattern, &length, &cut, &res}) {
-        auto cell = inner.removeFromLeft(inner.getWidth() / 4).reduced(3, 0);
-        c->caption.setBounds(cell.removeFromTop(10));
-        c->box.setBounds(cell.removeFromTop(24));
-      }
-    }
-    area.removeFromTop(6);
-    feelArea = area.removeFromTop(96);
-    {
-      auto inner = feelArea.reduced(10, 8);
-      inner.removeFromTop(14);
-      placeKnobs(inner.removeFromLeft(3 * 72), {&density, &variation, &hold});
-    }
-    for (auto& m : mangleModules) m.bounds = {};
-    mangleArea = {};
-  } else {
-    chopArea = {};
-    feelArea = {};
-    // Modules across two rows, sized to how many knobs each needs.
-    mangleArea = area.removeFromTop(200);
-    auto rows = mangleArea;
-    auto top = rows.removeFromTop(96);
-    rows.removeFromTop(8);
-    auto bottom = rows.removeFromTop(96);
-
-    auto place = [](juce::Rectangle<int>& row, Module& m, int width) {
-      m.bounds = row.removeFromLeft(width);
+      rechopButton.setBounds(row.removeFromLeft(96));
       row.removeFromLeft(6);
-      auto inner = m.bounds.reduced(8, 6);
-      inner.removeFromTop(13);
-      if (m.power) m.power->button.setBounds(inner.removeFromTop(20).withWidth(52));
-      if (!m.knobs.empty()) placeKnobs(inner, m.knobs);
-    };
-    // Width from the knob count, so no module is padded out with dead space.
-    auto widthFor = [](const Module& m) { return 24 + juce::jmax(1, int(m.knobs.size())) * 72; };
-    place(top, mangleModules[0], 104);
-    place(top, mangleModules[1], widthFor(mangleModules[1]));
-    place(top, mangleModules[2], widthFor(mangleModules[2]));
-    place(bottom, mangleModules[3], widthFor(mangleModules[3]));
-    place(bottom, mangleModules[4], widthFor(mangleModules[4]));
-    place(bottom, mangleModules[5], widthFor(mangleModules[5]));
+      chopMangleButton.setBounds(row.removeFromLeft(154));
+    } else {
+      rerollButton.setBounds(row.removeFromLeft(112));
+      row.removeFromLeft(10);
+      // Roll history sits with reroll, since it is what reroll makes recoverable.
+      rollBack.setBounds(row.removeFromLeft(28));
+      rollLabel.setBounds(row.removeFromLeft(44));
+      rollForward.setBounds(row.removeFromLeft(28));
+    }
   }
-  area.removeFromTop(6);
+  area.removeFromTop(8);
 
-  sideArea = area.removeFromTop(104);
+  // Settings for the mode: tempo always, then bars or the chop's shape. The
+  // panel is as wide as what is in it. Stretched full width, mangle mode's
+  // three controls sat in a box that was four fifths empty.
+  settingsArea = area.removeFromTop(112);
+  settingsArea.setWidth(chopMode() ? 20 + kCell + 6 + 74 + 18 + 4 * 108 + 14 + 3 * kCell + 12
+                                   : 20 + kCell + 6 + 74 + 18 + 80);
+  {
+    auto inner = settingsArea.reduced(10, 8);
+    inner.removeFromTop(14);
+    placeKnobs(inner.removeFromLeft(kCell), {&tempo});
+    inner.removeFromLeft(6);
+    auto syncCell = inner.removeFromLeft(74);
+    sync.button.setBounds(syncCell.removeFromTop(38).withTrimmedTop(8));
+    gridLabel.setBounds(syncCell.withTrimmedLeft(4).removeFromTop(22));
+    inner.removeFromLeft(18);
+
+    if (chopMode()) {
+      auto choices = inner.removeFromLeft(4 * 108).withTrimmedTop(6);
+      placeChoice(choices.removeFromLeft(104), pattern);
+      choices.removeFromLeft(4);
+      placeChoice(choices.removeFromLeft(104), length);
+      choices.removeFromLeft(4);
+      placeChoice(choices.removeFromLeft(104), cut);
+      choices.removeFromLeft(4);
+      placeChoice(choices.removeFromLeft(104), res);
+      inner.removeFromLeft(18);
+      placeKnobs(inner.removeFromLeft(3 * kCell), {&density, &variation, &hold});
+    } else {
+      placeChoice(inner.removeFromLeft(80).withTrimmedTop(6), bars);
+    }
+  }
+  area.removeFromTop(8);
+
+  // The rack: six modules in two rows on the left, sidechain and out stacked on
+  // the right, all in the same two row heights so the edges line up.
+  rackArea = area;
+  rackTitle = rackArea.removeFromTop(16);
+  rackOn.button.setBounds(rackTitle.withX(rackTitle.getX() + 236).withWidth(90));
+  rackArea.removeFromTop(4);
+  const int rowH = (rackArea.getHeight() - 6) / 2;
+  auto top = rackArea.removeFromTop(rowH);
+  rackArea.removeFromTop(6);
+  auto bottom = rackArea.removeFromTop(rowH);
+
+  auto place = [](juce::Rectangle<int>& row, Module& m, int width) {
+    m.bounds = row.removeFromLeft(width);
+    row.removeFromLeft(6);
+    auto inner = m.bounds.reduced(8, 6);
+    // The switch is the whole header: click the module's name to turn it on.
+    if (m.power) m.power->button.setBounds(inner.removeFromTop(18));
+    inner.removeFromTop(2);
+    if (!m.knobs.empty()) placeKnobs(inner, m.knobs);
+  };
+  // Widths from the knob count, then the bottom row stretched to the same
+  // total so the right column starts on one straight edge.
+  const int rackWidth = 96 + 6 + (16 + 4 * kCell) + 6 + (16 + 2 * kCell);
+  place(top, modules[0], 96);
+  place(top, modules[1], 16 + 4 * kCell);
+  place(top, modules[2], 16 + 2 * kCell);
+  place(bottom, modules[3], 16 + 2 * kCell + 24);
+  place(bottom, modules[4], 16 + kCell + 28);
+  place(bottom, modules[5], rackWidth - (16 + 2 * kCell + 24) - (16 + kCell + 28) - 12);
+
+  const int rightX = deckArea.getX() + rackWidth + 10;
+  sideArea = top.withLeft(rightX);
+  outArea = bottom.withLeft(rightX);
   {
     auto inner = sideArea.reduced(10, 8);
     inner.removeFromTop(14);
-    placeKnobs(inner.removeFromLeft(2 * 72), {&duck, &duckRelease});
+    placeKnobs(inner.removeFromLeft(2 * kCell), {&duck, &duckRelease});
     inner.removeFromLeft(10);
-    auto rateCell = inner.removeFromLeft(90);
-    duckRate.caption.setBounds(rateCell.removeFromTop(10));
-    duckRate.box.setBounds(rateCell.removeFromTop(24));
+    placeChoice(inner.removeFromLeft(84).withTrimmedTop(6), duckRate);
   }
-  area.removeFromTop(6);
-
-  // Fixed, not "whatever is left": taking the remainder made the level knob
-  // twice the size of every other dial.
-  outArea = area.removeFromTop(104);
   {
     auto inner = outArea.reduced(10, 8);
     inner.removeFromTop(14);
-    placeKnobs(inner.removeFromLeft(72), {&level});
+    placeKnobs(inner.removeFromLeft(kCell), {&level});
   }
 }
 
@@ -715,38 +932,38 @@ void HazenSamplerEditor::DragOut::paint(juce::Graphics& g) {
   const auto r = getLocalBounds().toFloat().reduced(0.5f);
   const bool ready = editor.processor.renderedSeconds() > 0.0;
   g.setColour(kSunken.withAlpha(ready ? 1.0f : 0.5f));
-  g.fillRoundedRectangle(r, 3.0f);
+  g.fillRoundedRectangle(r, 4.0f);
   // Dashed, so it reads as a place to grab from rather than a button to press.
-  juce::Path border;
-  border.addRoundedRectangle(r, 3.0f);
+  juce::Path border, dashed;
+  border.addRoundedRectangle(r, 4.0f);
   const float dashes[] = {4.0f, 3.0f};
-  g.setColour(ready ? (hover ? kSignal : kHairlineStrong) : kHairline);
-  g.strokePath(border, juce::PathStrokeType{1.0f}, {});
-  juce::Path dashed;
   juce::PathStrokeType{1.0f}.createDashedStroke(dashed, border, dashes, 2);
+  g.setColour(ready ? (hover ? kSignal : kHairlineStrong) : kHairline);
   g.fillPath(dashed);
 
   g.setColour(ready ? (hover ? kSignal : kInkDim) : kInkFaint);
-  g.setFont(mono(10.0f));
-  g.drawText(ready ? "drag to a track" : "nothing to drag yet", getLocalBounds(),
+  g.setFont(mono(10.5f, true));
+  g.drawText(ready ? kDragGlyph : "nothing to drag yet", getLocalBounds(),
              juce::Justification::centred);
 }
 
-void HazenSamplerEditor::DragOut::mouseDrag(const juce::MouseEvent&) {
+void HazenSamplerEditor::DragOut::mouseDrag(const juce::MouseEvent& e) {
+  if (dragging || e.getDistanceFromDragStart() < 6) return;
   if (editor.processor.renderedSeconds() <= 0.0) return;
   const auto file = editor.processor.writeDragFile();
   if (file == juce::File{}) return;
-  // An external drag, so the destination is any app that takes files — which is
+  dragging = true;
+  // An external drag, so the destination is any app that takes files, which is
   // what puts it on an Ableton audio track in one gesture.
-  juce::DragAndDropContainer::performExternalDragDropOfFiles({file.getFullPathName()}, false,
-                                                             &editor, nullptr);
+  juce::DragAndDropContainer::performExternalDragDropOfFiles(
+      {file.getFullPathName()}, false, this, [this] { dragging = false; });
 }
 
 bool HazenSamplerEditor::isInterestedInFileDrag(const juce::StringArray& files) {
   for (const auto& f : files) {
     // Deliberately wide, and it includes video. A file the host refuses to even
-    // offer is worse than one that fails with a message — the lesson the web
-    // build learned from AIFF — and dropping an mp4 in for its audio is a normal
+    // offer is worse than one that fails with a message, the lesson the web
+    // build learned from AIFF, and dropping an mp4 in for its audio is a normal
     // thing to do rather than a mistake to guard against.
     static const char* kTakes[] = {".wav", ".aif", ".aiff", ".mp3",  ".flac", ".m4a",
                                    ".caf", ".ogg", ".aac",  ".mp4",  ".m4v",  ".mov",
@@ -758,7 +975,19 @@ bool HazenSamplerEditor::isInterestedInFileDrag(const juce::StringArray& files) 
   return false;
 }
 
+void HazenSamplerEditor::fileDragEnter(const juce::StringArray&, int, int) {
+  dropping = true;
+  repaint(waveArea);
+}
+
+void HazenSamplerEditor::fileDragExit(const juce::StringArray&) {
+  dropping = false;
+  repaint(waveArea);
+}
+
 void HazenSamplerEditor::filesDropped(const juce::StringArray& files, int, int) {
+  dropping = false;
+  repaint(waveArea);
   if (files.isEmpty()) return;
   processor.loadSample(juce::File{files[0]});
 }

@@ -59,6 +59,8 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
 
   // --- editor-facing state ---------------------------------------------
   juce::String sampleName() const;
+  /// Full path of the loaded file, for the session to remember.
+  juce::String samplePath() const;
   bool hasSample() const;
   bool isRendering() const { return rendering.load(); }
   double renderedSeconds() const;
@@ -101,6 +103,9 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   void chopAndMangle();
   /// True when any rack module is switched on.
   bool rackActive() const;
+  /// The chop mode's master switch for the rack. Mangle mode ignores it: there
+  /// the rack is the mode.
+  bool rackOn() const;
   /// Step through past rolls. -1 back, +1 forward. Returns false at the ends.
   bool stepRoll(int delta);
   int rollIndex() const { return static_cast<int>(rollAt); }
@@ -148,6 +153,7 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   mutable juce::CriticalSection sourceLock;
   hazen::Audio source;
   juce::String loadedName;
+  juce::String loadedPath;
 
   /// What the editor draws, published by the render thread. Its own lock, so
   /// the UI can never stall the audio thread.
@@ -183,11 +189,21 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   int duckRate = 4;
   float duckRelease = 0.45f;
   float levelDb = 0.0f;
+  bool rackEnabled = true;
+  /// The grid in use. The host's tempo when synced, the knob otherwise.
   std::atomic<double> hostBpm{120.0};
+  /// What the host last reported, synced or not. Kept apart from hostBpm on
+  /// purpose: when they were one variable, sync off with the knob away from the
+  /// host's tempo re-rendered forever, each block undoing what the render had
+  /// just set.
+  std::atomic<double> hostReported{120.0};
 
   // --- playback --------------------------------------------------------
+  /// Derived on the audio thread each block: the play button, or a held note.
   std::atomic<bool> playing{false};
   std::atomic<bool> manualPlay{false};
+  /// Stop means silence, including a note the host is still holding.
+  std::atomic<bool> killNotes{false};
   std::atomic<bool> restartPending{false};
   /// Asks the audio thread to jump to the top. Set by play and by the actions
   /// that mean "this is a new idea".
@@ -207,8 +223,13 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   float gain = 0.0f;
   float gainStep = 0.0f;
 
-  bool syncToHost = false;
-  double lastHostPpq = -1.0;
+  /// Notes currently held. A note plays the loop while it lasts, from the top,
+  /// the way a sampler does; note-off ends it. The host's transport does not
+  /// start playback on its own any more. It used to, and it also rewound the
+  /// loop on every bar, so a 16-bar chop never got past its first bar in Live.
+  int heldNotes = 0;
+
+  std::atomic<bool> syncToHost{true};
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HazenSamplerProcessor)
 };

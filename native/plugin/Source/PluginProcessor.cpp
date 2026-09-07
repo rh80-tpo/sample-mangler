@@ -98,6 +98,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout HazenSamplerProcessor::layou
   p.add(pct("hold", "Hold", 0.25f));
   p.add(std::make_unique<AudioParameterChoice>(ParameterID{"res", 1}, "Grid",
                                                StringArray{"1/8", "1/16"}, 1));
+  // The rack's master switch in chop mode. On the site it is the "effects"
+  // toggle; here it is what lets you hear the chop dry without clearing six
+  // modules one by one.
+  p.add(std::make_unique<AudioParameterBool>(ParameterID{"rackon", 1}, "Effects", true));
 
   // --- out ---
   p.add(pct("duck", "Duck", 0.0f));
@@ -176,6 +180,7 @@ bool HazenSamplerProcessor::loadSample(const juce::File& file) {
     const juce::ScopedLock sl(sourceLock);
     source = std::move(loaded);
     loadedName = file.getFileName();
+    loadedPath = file.getFullPathName();
   }
   {
     const juce::ScopedLock sl(uiLock);
@@ -198,6 +203,7 @@ void HazenSamplerProcessor::startPlayback() {
 
 void HazenSamplerProcessor::stopPlayback() {
   manualPlay.store(false);
+  killNotes.store(true);
   playing.store(false);
 }
 
@@ -211,10 +217,10 @@ void HazenSamplerProcessor::readParameters() {
   auto flag = [&](const char* id) { return raw(id) > 0.5f; };
 
   modeIndex = static_cast<int>(raw("mode"));
-  syncToHost = flag("sync");
-  // With sync off the knob is the grid. With it on, processBlock has already
-  // pushed the host's tempo into hostBpm.
-  if (!syncToHost) hostBpm.store(static_cast<double>(raw("tempo")));
+  syncToHost.store(flag("sync"));
+  // With sync on the host's tempo is the grid; off, the knob is.
+  hostBpm.store(syncToHost.load() ? hostReported.load() : static_cast<double>(raw("tempo")));
+  rackEnabled = flag("rackon");
 
   mangle.reverse_on = flag("revon");
   mangle.chop_on = flag("chopon");
@@ -289,7 +295,7 @@ void HazenSamplerProcessor::renderNow() {
     // skipped entirely here, so every module was dead in chop mode. No bar
     // fitting afterwards: the chop is already exact, and a reverb tail is meant
     // to ring past the loop rather than be trimmed back into it.
-    if (rackActive()) {
+    if (rackEnabled && rackActive()) {
       // Per phrase, then restitched. Running the rack over the whole loop
       // reordered and smeared material across phrase boundaries and destroyed
       // the arrangement the pattern exists to create.
@@ -334,42 +340,36 @@ void HazenSamplerProcessor::processBlock(juce::AudioBuffer<float>& buffer,
   buffer.clear();
 
   // Follow the host's tempo. A chop built at the wrong tempo is useless, and a
-  // sampler in a DAW has no business inventing its own clock.
+  // sampler in a DAW has no business inventing its own clock. Tempo only: the
+  // transport does not start or stop the loop, notes and the play button do.
   if (auto* head = getPlayHead()) {
     if (const auto pos = head->getPosition()) {
       if (const auto bpm = pos->getBpm()) {
-        if (std::abs(*bpm - hostBpm.load()) > 0.01) {
-          hostBpm.store(*bpm);
-          dirty.store(true);  // notify() is not real-time safe; the thread polls
-        }
-      }
-      if (syncToHost) {
-        if (const auto ppq = pos->getPpqPosition()) {
-          const double bars = *ppq / 4.0;
-          const double wrapped = bars - std::floor(bars);
-          if (pos->getIsPlaying()) {
-            // Restart on the bar so the loop stays locked to the arrangement.
-            if (lastHostPpq < 0.0 || wrapped < lastHostPpq) rewind.store(true);
-            lastHostPpq = wrapped;
-            playing.store(true);
-          } else {
-            playing.store(manualPlay.load());
-            lastHostPpq = -1.0;
-          }
+        if (std::abs(*bpm - hostReported.load()) > 0.01) {
+          hostReported.store(*bpm);
+          // notify() is not real-time safe; the render thread polls the flag.
+          if (syncToHost.load()) dirty.store(true);
         }
       }
     }
   }
 
+  // Notes gate the loop the way they gate a sampler: on plays it from the top,
+  // off ends it, and a second note while one is held retriggers. Stop from the
+  // editor clears anything held, because stop has to mean silence.
+  if (killNotes.exchange(false)) heldNotes = 0;
   for (const auto meta : midi) {
     const auto m = meta.getMessage();
     if (m.isNoteOn()) {
+      ++heldNotes;
       rewind.store(true);
-      playing.store(true);
-    } else if (m.isAllNotesOff()) {
-      playing.store(false);
+    } else if (m.isNoteOff()) {
+      heldNotes = std::max(0, heldNotes - 1);
+    } else if (m.isAllNotesOff() || m.isAllSoundOff()) {
+      heldNotes = 0;
     }
   }
+  playing.store(manualPlay.load() || heldNotes > 0);
 
   // No lock. The index is the only shared thing read here, and the buffer it
   // points at is never written while it is live.
@@ -468,6 +468,11 @@ void HazenSamplerProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 juce::String HazenSamplerProcessor::sampleName() const {
   const juce::ScopedLock sl(sourceLock);
   return loadedName;
+}
+
+juce::String HazenSamplerProcessor::samplePath() const {
+  const juce::ScopedLock sl(sourceLock);
+  return loadedPath;
 }
 
 bool HazenSamplerProcessor::hasSample() const {
@@ -587,13 +592,19 @@ void HazenSamplerProcessor::getStateInformation(juce::MemoryBlock& dest) {
   // The sample path travels with the session. The audio itself does not: a
   // preset that embedded 30 seconds of PCM would bloat every save, and the file
   // is on disk anyway.
-  state.setProperty("samplePath", sampleName(), nullptr);
+  state.setProperty("samplePath", samplePath(), nullptr);
   if (auto xml = state.createXml()) copyXmlToBinary(*xml, dest);
 }
 
 void HazenSamplerProcessor::setStateInformation(const void* data, int size) {
   if (auto xml = getXmlFromBinary(data, size)) {
-    params.replaceState(juce::ValueTree::fromXml(*xml));
+    auto state = juce::ValueTree::fromXml(*xml);
+    const juce::File file{state.getProperty("samplePath").toString()};
+    params.replaceState(state);
+    // Bring the sample back with the session. The path was saved before, but
+    // nothing ever read it, so every reopened set came up empty and the first
+    // thing you did was find the file again.
+    if (file.existsAsFile() && file.getFullPathName() != samplePath()) loadSample(file);
     invalidate();
   }
 }
@@ -672,6 +683,10 @@ void HazenSamplerProcessor::reroll() {
   if (rolls.size() > 24) rolls.erase(rolls.begin());
   rollAt = rolls.size() - 1;
   invalidate();
+}
+
+bool HazenSamplerProcessor::rackOn() const {
+  return params.getRawParameterValue("rackon")->load() > 0.5f;
 }
 
 bool HazenSamplerProcessor::rackActive() const {

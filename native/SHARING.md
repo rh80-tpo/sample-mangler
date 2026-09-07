@@ -37,18 +37,30 @@ than after ten minutes of it not showing up.
 
 ## Using it
 
-- Drag an audio file onto the plugin window, or press `load a sample`. Video
-  files work too — drop an **mp4** and it takes the audio out of it. (`.mov` does
+The row of buttons under the waveform is the whole workflow, left to right.
+
+- **load**: drag an audio file onto the plugin window, or press it. Video
+  files work too. Drop an **mp4** and it takes the audio out of it. (`.mov` does
   not: macOS refuses QuickTime containers that carry video.)
-- `mode` picks **mangle** (a chain of destructive effects, bar-locked) or
-  **chop** (cuts a vocal into a 16-bar chopped loop).
-- Press `play` to hear it. A MIDI note also triggers it. With `sync` on it
-  follows the host transport and restarts on the bar.
-- `reroll` in mangle mode rolls a random chain, with `<` `>` to step back
-  through past rolls. `rechop` and `rechop + mangle` are the chop-mode
-  equivalents.
-- **`drag to a track`** drags the loop out as a 24-bit WAV, straight onto an
-  audio track. `export wav` is the same file through a save dialog.
+- **play / stop**: one button. Play starts from the top. A MIDI note does the
+  same and holds the loop for as long as the note lasts, so a 4-bar note in a
+  clip plays 4 bars. `sync` follows the host's tempo and nothing else: the
+  transport running does not start the loop by itself.
+- **mangle / chop**: mangle runs the whole sample through the rack and fits it
+  to a bar count. Chop cuts it into a rhythm on the grid, then runs the rack over
+  each phrase.
+- **reroll** (mangle) rolls a random rack, with `<` `>` to step back through
+  past rolls. **rechop** (chop) is a new performance of the same settings;
+  **rechop + mangle** adds a fresh random rack on top.
+- **export wav** saves a 24-bit WAV. **drag to a track** is the same file,
+  dragged straight onto an audio track.
+
+The rack is visible in both modes. In chop mode the `effects` switch above it
+turns the whole rack off so you can hear the chop dry. Every knob resets with a
+double-click, and hovering anything for a moment says what it does.
+
+The loaded file's path is saved with the session, so a reopened set comes back
+with its sample.
 
 Sample length is capped at 30 seconds; longer files are truncated and the status
 line says so.

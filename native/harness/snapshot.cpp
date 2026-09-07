@@ -65,11 +65,24 @@ int main() {
   HazenSamplerProcessor p;
   p.setPlayConfigDetails(0, 2, 44100.0, 512);
   p.prepareToPlay(44100.0, 512);
+
+  // Before anything is loaded: this is the first thing anyone sees.
+  shoot(p, "editor-empty.png");
+
   p.loadSample(wav);
   for (int i = 0; i < 200 && (p.isRendering() || p.renderedSeconds() <= 0.0); ++i)
     juce::Thread::sleep(25);
 
+  // Playing, a third of the way through, so the transport button and the
+  // playhead are in the shot.
+  p.startPlayback();
+  {
+    juce::AudioBuffer<float> out(2, 512);
+    juce::MidiBuffer none;
+    for (int b = 0; b < 115; ++b) { out.clear(); p.processBlock(out, none); }
+  }
   shoot(p, "editor-mangle.png");
+  p.stopPlayback();
 
   if (auto* mode = p.params.getParameter("mode")) {
     mode->beginChangeGesture();
