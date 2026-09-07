@@ -296,7 +296,8 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
   title.setColour(juce::Label::textColourId, kInk);
   addAndMakeVisible(title);
 
-  subtitle.setText("a midi note plays it" + kDot + "drop a file anywhere", juce::dontSendNotification);
+  subtitle.setText("v" HAZEN_VERSION + kDot + "a midi note plays it" + kDot + "drop a file anywhere",
+                   juce::dontSendNotification);
   subtitle.setFont(mono(9.5f));
   subtitle.setColour(juce::Label::textColourId, kInkFaint);
   addAndMakeVisible(subtitle);
@@ -931,7 +932,8 @@ void HazenSamplerEditor::resized() {
 
 void HazenSamplerEditor::DragOut::paint(juce::Graphics& g) {
   const auto r = getLocalBounds().toFloat().reduced(0.5f);
-  const bool ready = editor.processor.renderedSeconds() > 0.0;
+  const bool pending = editor.processor.renderPending();
+  const bool ready = editor.processor.renderedSeconds() > 0.0 && !pending;
   g.setColour(kSunken.withAlpha(ready ? 1.0f : 0.5f));
   g.fillRoundedRectangle(r, 4.0f);
   // Dashed, so it reads as a place to grab from rather than a button to press.
@@ -944,7 +946,7 @@ void HazenSamplerEditor::DragOut::paint(juce::Graphics& g) {
 
   g.setColour(ready ? (hover ? kSignal : kInkDim) : kInkFaint);
   g.setFont(mono(10.5f, true));
-  g.drawText(ready ? kDragGlyph : "nothing to drag yet", getLocalBounds(),
+  g.drawText(ready ? kDragGlyph : pending ? "rendering" : "nothing to drag yet", getLocalBounds(),
              juce::Justification::centred);
 }
 

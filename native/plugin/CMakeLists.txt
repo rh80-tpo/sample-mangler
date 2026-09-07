@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
-project(HazenSampler VERSION 0.19.0 LANGUAGES C CXX)
+project(HazenSampler VERSION 0.19.2 LANGUAGES C CXX)
+
+# The version is shown in the editor, so anyone can tell which build a running
+# host has loaded. A host keeps the plugin code it loaded at launch; replacing
+# the bundle on disk changes nothing until the host is quit and relaunched, and
+# without a number on the face there was no way to see that.
+add_compile_definitions(HAZEN_VERSION="${PROJECT_VERSION}")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

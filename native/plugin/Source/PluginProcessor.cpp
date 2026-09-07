@@ -606,6 +606,13 @@ bool HazenSamplerProcessor::exportTo(const juce::File& file) const {
 }
 
 juce::File HazenSamplerProcessor::writeDragFile() const {
+  // Rechop then drag in the same breath, and the take being dragged is still
+  // the old one while the new one renders. Wait for it. A few seconds covers a
+  // 16-bar chop with the whole rack on; past that something is wrong and the
+  // drag is refused rather than handing over the wrong audio.
+  for (int waited = 0; renderPending() && waited < 4000; waited += 20) juce::Thread::sleep(20);
+  if (renderPending()) return {};
+
   const int slot = liveTake.load(std::memory_order_acquire);
   if (slot < 0) return {};
   const auto dir = dragFolder();
@@ -613,8 +620,15 @@ juce::File HazenSamplerProcessor::writeDragFile() const {
   const auto file = dir.getChildFile(exportName() + ".wav");
   // The name carries a hash of the audio, so a file that already exists under
   // it is this take, already written. Leave it: Live may have it open.
-  if (file.existsAsFile() && file.getSize() > 1000) return file;
-  return exportTo(file) ? file : juce::File{};
+  const bool ok = (file.existsAsFile() && file.getSize() > 1000) || exportTo(file);
+
+  // One line per drag, so what the plugin handed the host is on record. This
+  // is the evidence for "the drag gave me the old take" that a host will not
+  // give you itself.
+  const auto line = juce::Time::getCurrentTime().toISO8601(true) + "  v" HAZEN_VERSION "  " +
+                    (ok ? file.getFileName() : juce::String("FAILED")) + "\n";
+  dir.getChildFile("drag.log").appendText(line);
+  return ok ? file : juce::File{};
 }
 
 void HazenSamplerProcessor::getStateInformation(juce::MemoryBlock& dest) {

@@ -9,7 +9,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NAME="HAZEN Sampler"
-VERSION="${1:-0.19}"
+# From CMakeLists unless given, so the zip, the bundle and the face agree.
+VERSION="${1:-$(sed -n 's/^project(HazenSampler VERSION \([0-9.]*\).*/\1/p' plugin/CMakeLists.txt)}"
 OUT="dist"
 # Named, because this is the folder name the recipient sees when they unzip.
 STAGE="$OUT/HAZEN Sampler $VERSION"

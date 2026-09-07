@@ -63,6 +63,8 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   juce::String samplePath() const;
   bool hasSample() const;
   bool isRendering() const { return rendering.load(); }
+  /// A render is running or queued. What you see may not be what you get yet.
+  bool renderPending() const { return rendering.load() || dirty.load(); }
   double renderedSeconds() const;
   /// Peaks for drawing, resampled from a snapshot the render thread published.
   /// Never touches anything the audio thread reads.
@@ -87,8 +89,10 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   /// Write the rendered loop as a 24-bit WAV. Returns false if there is nothing
   /// to write or the file could not be opened.
   bool exportTo(const juce::File& file) const;
-  /// A WAV of the current loop in the temp folder, for dragging into a host.
-  /// Empty file on failure.
+  /// A WAV of the current loop, for dragging into a host. Waits for a pending
+  /// render first, up to a few seconds, so a drag begun right after rechop
+  /// hands over the new take and not the one it is replacing. Empty file on
+  /// failure. Every drag is logged to drag.log beside the files.
   juce::File writeDragFile() const;
   /// The live take's file name: the source, what was done to it, which take,
   /// and a hash of the audio so no two takes ever share one.

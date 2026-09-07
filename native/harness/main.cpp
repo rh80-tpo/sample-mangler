@@ -237,8 +237,23 @@ int main() {
     // The same take asked for twice is the same file, not a growing pile.
     check("the same take drags out as the same file", p.writeDragFile() == again,
           again.getFileName());
+
+    // Rechop and drag in the same breath. The drag has to wait for the render
+    // rather than hand over the take it is replacing.
+    p.rechop();
+    const auto rushed = p.writeDragFile();
+    check("a drag right after rechop waits for the new take",
+          rushed.existsAsFile() && rushed != again && !p.renderPending(),
+          again.getFileName() + " then " + rushed.getFileName());
+
+    const auto log = HazenSamplerProcessor::dragFolder().getChildFile("drag.log");
+    check("every drag is logged",
+          log.existsAsFile() && log.loadFileAsString().contains(rushed.getFileName()),
+          log.getFileName());
     dragFile.deleteFile();
     again.deleteFile();
+    rushed.deleteFile();
+    log.deleteFile();
   }
   p.stopPlayback();
 

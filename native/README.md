@@ -196,3 +196,11 @@ exporting `GetPluginFactory` and `bundleEntry`, it registers as
 `Instrument|Synth`, it is installed in a folder Live scans, and the processor
 inside it loads files and produces measured audio. The remaining step is you
 opening Live and dropping it on a track.
+
+## Installing a newer build
+
+Quit Live first, all the way (Cmd+Q), then replace the bundle, then relaunch.
+Live keeps the plugin code it loaded at launch. A bundle swapped on disk while
+Live is open changes nothing, and Rescan does not help: the old code is still
+in memory and every new instance uses it. The version number is on the face,
+top left next to the name, so you can tell which build you are looking at.

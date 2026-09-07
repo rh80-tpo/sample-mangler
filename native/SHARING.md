@@ -114,3 +114,11 @@ In order of likelihood:
   means a knob move queues a re-render. The status line says when one is running.
 - Presets save the sample *path*, not the audio. Move or rename the file and the
   plugin will not find it again.
+
+## Installing a newer build
+
+Quit Live first, all the way (Cmd+Q), then replace the bundle, then relaunch.
+Live keeps the plugin code it loaded at launch. A bundle swapped on disk while
+Live is open changes nothing, and Rescan does not help: the old code is still
+in memory and every new instance uses it. The version number is on the face,
+top left next to the name, so you can tell which build you are looking at.
