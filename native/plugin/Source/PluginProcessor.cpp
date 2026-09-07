@@ -187,6 +187,7 @@ bool HazenSamplerProcessor::loadSample(const juce::File& file) {
     ui.status = frames > maxFrames ? file.getFileName() + " (first 30s)" : file.getFileName();
     ui.hasSample = true;
   }
+  takeCounter.store(0);
   restartPending.store(true);
   invalidate();
   return true;
@@ -320,11 +321,31 @@ void HazenSamplerProcessor::renderNow() {
 
   publishForEditor(out, builtVoices, name.isEmpty() ? note : name + kDot + note);
 
+  // Name the take now, from what it is. A hash of the audio is in the name so
+  // two takes cannot collide even across sessions or instances, and the same
+  // take dragged twice lands on the same file rather than a duplicate.
+  juce::uint32 hash = 2166136261u;
+  for (const auto& channel : out.channels) {
+    for (std::size_t i = 0; i < channel.size(); i += 64) {
+      const auto bits = static_cast<juce::uint32>(juce::roundToInt(channel[i] * 32767.0f) & 0xffff);
+      hash = (hash ^ bits) * 16777619u;
+    }
+  }
+  hash ^= static_cast<juce::uint32>(out.frames());
+  const int number = takeCounter.fetch_add(1) + 1;
+  auto base = name.isEmpty() ? juce::String("hazen") : name.upToLastOccurrenceOf(".", false, false);
+  if (base.isEmpty()) base = "hazen";
+  const auto takeName = base + "-" + (modeIndex == 1 ? "chop" : "mangle") + "-" +
+                        juce::String(juce::roundToInt(hostBpm.load())) + "bpm-take" +
+                        juce::String(number).paddedLeft('0', 2) + "-" +
+                        juce::String::toHexString(static_cast<int>(hash & 0xffffff)).paddedLeft('0', 6);
+
   // Publish into the slot the audio thread is not reading, then point at it.
   // The release/acquire pair is what makes the buffer visible before the index.
   const int slot = writeTake;
   takes[static_cast<std::size_t>(slot)].audio = std::move(out);
   takes[static_cast<std::size_t>(slot)].voices = std::move(builtVoices);
+  takes[static_cast<std::size_t>(slot)].name = takeName;
   writeTake = (writeTake + 1) % static_cast<int>(takes.size());
   liveTake.store(slot, std::memory_order_release);
 
@@ -546,11 +567,16 @@ std::vector<float> HazenSamplerProcessor::rms(int columns) const {
 }
 
 juce::String HazenSamplerProcessor::exportName() const {
-  const juce::ScopedLock sl(sourceLock);
-  auto base = loadedName.isEmpty() ? juce::String("hazen") : loadedName.upToLastOccurrenceOf(".", false, false);
-  if (base.isEmpty()) base = "hazen";
-  const auto what = modeIndex == 1 ? "chop" : "mangle";
-  return base + "-" + what + "-" + juce::String(juce::roundToInt(hostBpm.load())) + "bpm";
+  // From the take that is live, not from the current settings: a knob moved
+  // since the render would otherwise name a file for audio it is not in.
+  const int slot = liveTake.load(std::memory_order_acquire);
+  if (slot < 0) return "hazen";
+  const auto& name = takes[static_cast<std::size_t>(slot)].name;
+  return name.isEmpty() ? juce::String("hazen") : name;
+}
+
+juce::File HazenSamplerProcessor::dragFolder() {
+  return juce::File::getSpecialLocation(juce::File::userMusicDirectory).getChildFile("HAZEN Sampler");
 }
 
 bool HazenSamplerProcessor::exportTo(const juce::File& file) const {
@@ -580,10 +606,14 @@ bool HazenSamplerProcessor::exportTo(const juce::File& file) const {
 }
 
 juce::File HazenSamplerProcessor::writeDragFile() const {
-  const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                       .getChildFile("HAZEN Sampler");
+  const int slot = liveTake.load(std::memory_order_acquire);
+  if (slot < 0) return {};
+  const auto dir = dragFolder();
   dir.createDirectory();
   const auto file = dir.getChildFile(exportName() + ".wav");
+  // The name carries a hash of the audio, so a file that already exists under
+  // it is this take, already written. Leave it: Live may have it open.
+  if (file.existsAsFile() && file.getSize() > 1000) return file;
   return exportTo(file) ? file : juce::File{};
 }
 

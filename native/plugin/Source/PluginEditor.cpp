@@ -389,7 +389,8 @@ HazenSamplerEditor::HazenSamplerEditor(HazenSamplerProcessor& p)
                            if (file != juce::File{}) processor.exportTo(file);
                          });
   };
-  dragOut.setTooltip("Drag this onto an audio track. It lands there as a WAV.");
+  dragOut.setTooltip("Drag this onto an audio track. It lands as a WAV, kept in Music/HAZEN Sampler "
+                     "so the clip keeps working. Every take gets its own file.");
   addAndMakeVisible(dragOut);
 
   // --- settings --------------------------------------------------------

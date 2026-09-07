@@ -215,8 +215,30 @@ int main() {
     const auto dragFile = p.writeDragFile();
     check("the drag file is written", dragFile.existsAsFile() && dragFile.getSize() > 1000,
           dragFile.getFileName());
-    check("the drag file is named usefully", dragFile.getFileName().contains("bpm"),
+    check("the drag file is named usefully",
+          dragFile.getFileName().contains("bpm") && dragFile.getFileName().contains("take"),
           dragFile.getFileName());
+    check("the drag file is kept, not in temp",
+          dragFile.isAChildOf(juce::File::getSpecialLocation(juce::File::userMusicDirectory)),
+          dragFile.getParentDirectory().getFullPathName());
+
+    // The bug as reported: rechop, drag again, and Live put the first take on
+    // the track. Every take shared one file name, and Live had that name cached.
+    juce::MemoryBlock firstBytes;
+    dragFile.loadFileAsData(firstBytes);
+    p.rechop();
+    settle();
+    const auto again = p.writeDragFile();
+    juce::MemoryBlock secondBytes;
+    again.loadFileAsData(secondBytes);
+    check("a rechop drags out as a new file",
+          again.existsAsFile() && again != dragFile && !(firstBytes == secondBytes),
+          dragFile.getFileName() + " then " + again.getFileName());
+    // The same take asked for twice is the same file, not a growing pile.
+    check("the same take drags out as the same file", p.writeDragFile() == again,
+          again.getFileName());
+    dragFile.deleteFile();
+    again.deleteFile();
   }
   p.stopPlayback();
 

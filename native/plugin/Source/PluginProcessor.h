@@ -90,8 +90,12 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   /// A WAV of the current loop in the temp folder, for dragging into a host.
   /// Empty file on failure.
   juce::File writeDragFile() const;
-  /// A name worth giving an exported file: the source plus what was done to it.
+  /// The live take's file name: the source, what was done to it, which take,
+  /// and a hash of the audio so no two takes ever share one.
   juce::String exportName() const;
+  /// Where drag files are kept. The user's Music folder, not temp: Live
+  /// references a dropped file where it sits, and a temp folder gets cleared.
+  static juce::File dragFolder();
 
   /// Roll a random chain, the way the web build's reroll does.
   void reroll();
@@ -144,8 +148,16 @@ class HazenSamplerProcessor : public juce::AudioProcessor,
   struct Take {
     hazen::Audio audio;
     std::vector<hazen::Voice> voices;
+    /// The file name this take drags out as, fixed when it was rendered:
+    /// source, mode, tempo, take number, and a hash of the audio. Every
+    /// take used to share one name, so Live kept handing back the first one
+    /// it had seen under it.
+    juce::String name;
   };
   std::array<Take, 3> takes;
+  /// Counts renders since the sample was loaded. Render thread only, reset
+  /// by loadSample through the atomic.
+  std::atomic<int> takeCounter{0};
   std::atomic<int> liveTake{-1};
   int writeTake = 0;
 

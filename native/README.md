@@ -91,9 +91,14 @@ transport, note, tempo and session behaviour that pass changed.
 
 `drag to a track` is the short way: drag from that panel straight into Ableton's
 arrangement or session view and the loop lands as an audio clip. It writes a
-24-bit WAV to a temp folder and hands the host the file, named after the source,
-the mode and the tempo — `loveme-chop-140bpm.wav` — so a session full of them
-still makes sense a week later.
+24-bit WAV to `~/Music/HAZEN Sampler/` and hands the host the file, named after
+the source, the mode, the tempo, the take and a hash of the audio:
+`loveme-chop-140bpm-take07-c3e91a.wav`. Every take is its own file. They all
+shared one name before, and Live, having cached that name from the first drag,
+put the first take on the track no matter how many rechops had happened since.
+
+The folder is Music rather than temp because Live references a dropped file
+where it sits. A set pointing at a temp folder is a set that breaks.
 
 `export wav` is the same file through a save dialog, for when you want it
 somewhere specific.

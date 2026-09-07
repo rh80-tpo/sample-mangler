@@ -53,7 +53,8 @@ The row of buttons under the waveform is the whole workflow, left to right.
   past rolls. **rechop** (chop) is a new performance of the same settings;
   **rechop + mangle** adds a fresh random rack on top.
 - **export wav** saves a 24-bit WAV. **drag to a track** is the same file,
-  dragged straight onto an audio track.
+  dragged straight onto an audio track. Drag files are kept in
+  `~/Music/HAZEN Sampler/`, one per take, so the clips in your set keep working.
 
 The rack is visible in both modes. In chop mode the `effects` switch above it
 turns the whole rack off so you can hear the chop dry. Every knob resets with a
